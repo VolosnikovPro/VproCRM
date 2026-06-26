@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 build/
 dist/
-*.spec
+build/*.spec
 crm.db
 crm_test_backup.db
 stderr.txt
