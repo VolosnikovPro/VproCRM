@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRM System</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>CRM System</h1>
+        <nav class="tabs">
+            <button class="tab active" data-tab="pipeline" onclick="switchTab('pipeline')">Воронка</button>
+            <button class="tab" data-tab="tasks" onclick="switchTab('tasks')">Задачи</button>
+            <button class="tab" data-tab="calendar" onclick="switchTab('calendar')">Календарь</button>
+            <button class="tab" data-tab="dashboard" onclick="switchTab('dashboard')">Дашборд</button>
+            <button class="tab" data-tab="integrations" onclick="switchTab('integrations')">Интеграции</button>
+            <button class="tab" data-tab="ads" onclick="switchTab('ads')">Объявления</button>
+        </nav>
+        <div class="header-actions">
+            <button class="theme-toggle" id="themeToggle" onclick="toggleDarkQuick()" title="Переключить тему">☾</button>
+            <button class="btn btn-sm" onclick="openSettingsModal()" title="Настройки">⚙</button>
+            <button class="btn btn-primary" onclick="openClientModal()">+ <span>Клиент</span></button>
+        </div>
+    </header>
+
+    <div class="search-bar" id="searchBar">
+        <input type="text" id="searchInput" placeholder="Поиск по имени, телефону, организации, email..." oninput="onSearch()">
+        <select id="filterStage" onchange="onSearch()"><option value="">Все этапы</option></select>
+        <div class="filter-group">
+            <select id="filterSource" onchange="onSearch()"><option value="">Все источники</option></select>
+            <button class="btn-filter-settings" onclick="openSourceModal()" title="Настроить источники">✎</button>
+        </div>
+        <div class="filter-group">
+            <select id="filterTag" onchange="onSearch()"><option value="">Все теги</option></select>
+            <button class="btn-filter-settings" onclick="openTagModal()" title="Настроить теги">✎</button>
+        </div>
+        <button class="btn" onclick="exportCSV()">CSV</button>
+        <button class="btn" onclick="openImportModal()">Импорт</button>
+    </div>
+
+    <main>
+        <div class="tab-content active" id="tab-pipeline">
+            <div class="pipeline" id="pipeline"></div>
+        </div>
+
+        <div class="tab-content" id="tab-tasks">
+            <div class="tasks-page" id="tasksPage"></div>
+        </div>
+
+        <div class="tab-content" id="tab-calendar">
+            <div class="calendar-page" id="calendarPage"></div>
+        </div>
+
+        <div class="tab-content" id="tab-dashboard">
+            <div class="dashboard" id="dashboard"></div>
+        </div>
+
+        <div class="tab-content" id="tab-integrations">
+            <div class="integrations-page" id="integrationsPage"></div>
+        </div>
+
+        <div class="tab-content" id="tab-ads">
+            <div class="ads-page" id="adsPage"></div>
+        </div>
+
+    </main>
+
+    <!-- Stage modal -->
+    <div class="modal-overlay hidden" id="stageModal">
+        <div class="modal">
+            <h2 id="stageModalTitle">Новый этап</h2>
+            <form id="stageForm" onsubmit="saveStage(event)">
+                <input type="hidden" id="stageId">
+                <label>Название этапа</label>
+                <input type="text" id="stageName" required>
+                <label>Цвет</label>
+                <input type="color" id="stageColor" value="#3b82f6">
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+                <button type="button" class="btn" onclick="closeModal('stageModal')">Отмена</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Client modal -->
+    <div class="modal-overlay hidden" id="clientModal">
+        <div class="modal modal-wide">
+            <h2 id="clientModalTitle">Новый клиент</h2>
+            <form id="clientForm" onsubmit="saveClient(event)">
+                <input type="hidden" id="clientId">
+                <div class="form-grid">
+                    <div>
+                        <label>Название сделки</label>
+                        <input type="text" id="clientDealName" placeholder="Сделка">
+                        <label>Имя клиента</label>
+                        <input type="text" id="clientName" required>
+                        <label>Телефон</label>
+                        <input type="text" id="clientPhone" placeholder="Телефон, мессенджер или сайт">
+                        <label>Email</label>
+                        <input type="email" id="clientEmail" placeholder="email@example.com">
+                        <label>Организация</label>
+                        <input type="text" id="clientOrg" placeholder="Название компании">
+                    </div>
+                    <div>
+                        <label>Адрес</label>
+                        <input type="text" id="clientAddress" placeholder="Город, адрес">
+                        <label>Ответственный</label>
+                        <input type="text" id="clientResponsible" placeholder="Менеджер">
+                        <label>Бюджет сделки (₽)</label>
+                        <input type="number" id="clientBudget" value="0" min="0">
+                        <label>Источник заявки</label>
+                        <select id="clientSource"></select>
+                        <label>Этап</label>
+                        <select id="clientStage" required></select>
+                    </div>
+                </div>
+                <label>Теги</label>
+                <div class="tag-picker" id="tagPicker"></div>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+                <button type="button" class="btn" onclick="closeModal('clientModal')">Отмена</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Source modal -->
+    <div class="modal-overlay hidden" id="sourceModal">
+        <div class="modal">
+            <h2 id="sourceModalTitle">Новый источник</h2>
+            <form id="sourceForm" onsubmit="saveSource(event)">
+                <input type="hidden" id="sourceId">
+                <label>Название источника</label>
+                <input type="text" id="sourceName" required>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+                <button type="button" class="btn" onclick="closeModal('sourceModal')">Отмена</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Tag modal -->
+    <div class="modal-overlay hidden" id="tagModal">
+        <div class="modal">
+            <h2 id="tagModalTitle">Новый тег</h2>
+            <form id="tagForm" onsubmit="saveTag(event)">
+                <input type="hidden" id="tagId">
+                <label>Название тега</label>
+                <input type="text" id="tagName" required>
+                <label>Цвет</label>
+                <input type="color" id="tagColor" value="#6b7280">
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+                <button type="button" class="btn" onclick="closeModal('tagModal')">Отмена</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Import modal -->
+    <div class="modal-overlay hidden" id="importModal">
+        <div class="modal">
+            <h2>Импорт клиентов из CSV</h2>
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Формат: Имя, Телефон, Email, Организация, Адрес, Ответственный, Бюджет, Источник, Этап</p>
+            <input type="file" id="importFile" accept=".csv">
+            <button class="btn btn-primary" onclick="doImport()">Загрузить</button>
+            <button class="btn" onclick="closeModal('importModal')">Отмена</button>
+            <div id="importResult" style="margin-top:12px"></div>
+        </div>
+    </div>
+
+    <!-- Merge modal -->
+    <div class="modal-overlay hidden" id="mergeModal">
+        <div class="modal modal-wide">
+            <h2>Объединение дубликатов</h2>
+            <div id="mergeList"></div>
+            <button class="btn" onclick="closeModal('mergeModal')">Закрыть</button>
+        </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div class="modal-overlay hidden" id="settingsModal">
+        <div class="modal">
+            <h2>Настройки</h2>
+            <div class="settings-group">
+                <label>
+                    <input type="checkbox" id="settingsDarkTheme" onchange="toggleDark()">
+                    <span>Тёмная тема</span>
+                </label>
+                <label>
+                    <input type="checkbox" id="settingsNotifications" onchange="toggleNotifications()">
+                    <span>Уведомления о задачах</span>
+                </label>
+            </div>
+            <div class="settings-group">
+                <strong style="display:block;margin-bottom:8px;font-size:13px">Резервное копирование</strong>
+                <button class="btn btn-sm" onclick="window.open('/api/backup','_blank')">Скачать backup</button>
+                <div style="margin-top:8px">
+                    <input type="file" id="restoreFile" accept=".db" style="display:inline-block;width:auto">
+                    <button class="btn btn-sm btn-danger" onclick="doRestore()">Восстановить</button>
+                </div>
+            </div>
+            <div class="settings-group">
+                <strong style="display:block;margin-bottom:6px;font-size:13px">Объединение дубликатов</strong>
+                <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Поиск клиентов с одинаковым телефоном</p>
+                <button class="btn btn-sm btn-primary" onclick="findDuplicates()">Найти дубликаты</button>
+                <div id="mergeResult" style="margin-top:12px"></div>
+            </div>
+            <button class="btn" onclick="closeModal('settingsModal')">Закрыть</button>
+        </div>
+    </div>
+
+    <!-- Detail modal -->
+    <div class="modal-overlay hidden" id="detailModal">
+        <div class="modal modal-fullscreen">
+            <div class="modal-header">
+                <h2 id="detailName" class="editable" data-field="deal_name" onclick="inlineEdit(this)"></h2>
+                <div>
+                    <button class="btn btn-sm btn-danger" onclick="deleteClient()">Удалить</button>
+                    <button class="btn btn-sm" onclick="closeModal('detailModal')">✕</button>
+                </div>
+            </div>
+            <div class="detail-body">
+                <div class="detail-columns">
+                    <div class="detail-left">
+                        <div class="detail-grid">
+                            <div class="info-row"><strong>Название сделки:</strong> <span id="detailDealName" class="editable" data-field="deal_name" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Контакт:</strong> <span id="detailContactName" class="editable" data-field="name" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Телефон:</strong> <span id="detailPhone" class="editable" data-field="phone" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Email:</strong> <span id="detailEmail" class="editable" data-field="email" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Организация:</strong> <span id="detailOrg" class="editable" data-field="organization" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Адрес:</strong> <span id="detailAddress" class="editable" data-field="address" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Источник:</strong> <span id="detailSource" class="editable" data-field="source" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Этап:</strong> <span id="detailStage" class="editable" data-field="stage_id" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Ответственный:</strong> <span id="detailResponsible" class="editable" data-field="responsible" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Бюджет:</strong> <span id="detailBudget" class="editable" data-field="budget" onclick="inlineEdit(this)"></span></div>
+                        </div>
+                        <div class="detail-tags" id="detailTags"></div>
+                        <div class="detail-avito hidden" id="detailAvito">
+                            <div class="info-row"><strong>Авито:</strong> <span id="detailAvitoPartner"></span></div>
+                            <div class="info-row"><a id="detailAvitoLink" href="#" target="_blank" style="font-size:13px">🔗 Открыть объявление</a></div>
+                            <div class="avito-chat-reply" id="avitoChatReply">
+                                <form onsubmit="sendAvitoReplyFromCard(event)">
+                                    <input type="text" id="avitoReplyInput" placeholder="Написать сообщение..." required>
+                                    <button type="submit" class="btn btn-sm btn-primary">→</button>
+                                </form>
+                            </div>
+                        </div>
+                        <div class="detail-dates">
+                            <span>Создан: <span id="detailCreated"></span></span>
+                            <span>Обновлён: <span id="detailUpdated"></span></span>
+                        </div>
+                    </div>
+                    <div class="detail-right">
+                        <div class="timeline" id="timeline"></div>
+
+                        <h3>Добавить запись</h3>
+                        <form id="noteForm" onsubmit="addNote(event)">
+                            <div class="note-form-row">
+                                <textarea id="noteContent" rows="2" placeholder="Текст записи..." required></textarea>
+                                <div class="note-form-actions">
+                                    <input type="file" id="noteFile" hidden onchange="onNoteFileSelected()">
+                                    <button type="button" class="btn btn-sm file-attach-btn" onclick="document.getElementById('noteFile').click()" title="Прикрепить файл">+</button>
+                                    <span id="noteFileName" style="font-size:12px;color:var(--text-muted)"></span>
+                                    <button type="submit" class="btn btn-primary">Добавить</button>
+                                </div>
+                            </div>
+                        </form>
+
+                        <h3 style="margin-top:16px">Новая задача</h3>
+                        <form id="taskForm" onsubmit="addTask(event)">
+                            <div class="task-form-row">
+                                <input type="text" id="taskTitle" placeholder="Задача..." required>
+                                <input type="datetime-local" id="taskDueDate">
+                                <button type="submit" class="btn btn-primary btn-sm">+</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rejection reason modal -->
+    <div class="modal-overlay hidden" id="rejectionModal" onclick="if(event.target===this)closeModal('rejectionModal')">
+        <div class="modal" style="max-width:400px" onclick="event.stopPropagation()">
+            <div class="modal-header"><span>Причина отказа</span><button class="btn btn-sm" onclick="closeModal('rejectionModal')">✕</button></div>
+            <div class="modal-body">
+                <p style="margin-bottom:12px;font-size:14px" id="rejectionClientName"></p>
+                <label>Выберите причину:</label>
+                <select id="rejectionReasonSelect" style="width:100%;margin-top:6px" required>
+                    <option value="">— выберите причину —</option>
+                </select>
+                <div id="rejectionError" style="color:var(--danger);font-size:13px;margin-top:8px;display:none"></div>
+                <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+                    <button class="btn" onclick="closeModal('rejectionModal')">Отмена</button>
+                    <button class="btn btn-danger" onclick="confirmRejection()">Переместить в отказ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rejection reasons editor modal -->
+    <div class="modal-overlay hidden" id="rejectionReasonsModal" onclick="if(event.target===this)closeModal('rejectionReasonsModal')">
+        <div class="modal" style="max-width:450px" onclick="event.stopPropagation()">
+            <div class="modal-header"><span>Причины отказа</span><button class="btn btn-sm" onclick="closeModal('rejectionReasonsModal')">✕</button></div>
+            <div class="modal-body" id="rejectionReasonsBody">
+                <div id="rejectionReasonsList"></div>
+                <div style="display:flex;gap:6px;margin-top:12px">
+                    <input type="text" id="newReasonInput" placeholder="Новая причина" style="flex:1">
+                    <button class="btn btn-primary btn-sm" onclick="addRejectionReason()">+</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats sync modal -->
+    <div class="modal-overlay hidden" id="statsSyncModal" onclick="if(event.target===this)closeModal('statsSyncModal')">
+        <div class="modal" style="max-width:400px" onclick="event.stopPropagation()">
+            <div class="modal-header"><span>Загрузка статистики</span><button class="btn btn-sm" onclick="closeModal('statsSyncModal')">✕</button></div>
+            <div class="modal-body" id="statsSyncBody"></div>
+        </div>
+    </div>
+
+    <!-- Stage dropdown (positioned dynamically) -->
+    <div class="stage-dropdown hidden" id="stageDropdown"></div>
+
+    <!-- Context menu -->
+    <div class="context-menu hidden" id="contextMenu">
+        <div class="context-item" onclick="contextAction('edit')">Редактировать</div>
+        <div class="context-item" onclick="contextAction('moveFirst')">В первый этап</div>
+        <div class="context-item context-divider"></div>
+        <div class="context-item context-danger" onclick="contextAction('delete')">Удалить</div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

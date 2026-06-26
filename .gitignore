@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+crm.db
+crm_test_backup.db
+stderr.txt
+stdout.txt
+uploads/
+skills-lock.json
