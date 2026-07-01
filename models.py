@@ -54,6 +54,7 @@ class Client(Base):
     source = Column(String(200), nullable=False, default="")
     stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=False)
     rejection_reason_id = Column(Integer, ForeignKey("rejection_reasons.id"), nullable=True)
+    stages_passed = Column(Text, default="[]")  # JSON array of stage_ids the client has passed through
     created_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))
     updated_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0), onupdate=lambda: datetime.now().replace(microsecond=0))
 
@@ -85,6 +86,8 @@ class Task(Base):
     title = Column(String(500), nullable=False)
     due_date = Column(DateTime, nullable=True)
     completed = Column(Boolean, default=False)
+    completed_at = Column(DateTime, nullable=True)
+    result_text = Column(Text, default="")
     created_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))
 
     client = relationship("Client", back_populates="tasks")
@@ -126,6 +129,14 @@ class Attachment(Base):
     client = relationship("Client", back_populates="attachments")
 
 
+class AvitoGroup(Base):
+    __tablename__ = "avito_groups"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    sort_order = Column(Integer, default=0)
+    items = relationship("AvitoItem", back_populates="group")
+
+
 class AvitoToken(Base):
     __tablename__ = "avito_tokens"
 
@@ -144,6 +155,7 @@ class AvitoItem(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     avito_item_id = Column(Integer, unique=True, nullable=True)
+    group_id = Column(Integer, ForeignKey("avito_groups.id"), nullable=True)
     title = Column(String(500), default="")
     address = Column(String(500), default="")
     url = Column(String(1000), default="")
@@ -159,6 +171,8 @@ class AvitoItem(Base):
     stats_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))
     updated_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0), onupdate=lambda: datetime.now().replace(microsecond=0))
+
+    group = relationship("AvitoGroup", back_populates="items")
 
 
 class AvitoChat(Base):
@@ -220,3 +234,14 @@ class AvitoMessage(Base):
     read_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False)
     synced_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    type = Column(String(50), nullable=False)  # avito_message, overdue_task, new_client, stats_update, ...
+    message = Column(Text, nullable=False)
+    link_id = Column(Integer, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))

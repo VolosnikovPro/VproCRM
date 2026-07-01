@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CRM System</title>
+    <title>VProCRM</title>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <header>
-        <h1>CRM System</h1>
+        <h1>VProCRM</h1>
         <nav class="tabs">
             <button class="tab active" data-tab="pipeline" onclick="switchTab('pipeline')">Воронка</button>
             <button class="tab" data-tab="tasks" onclick="switchTab('tasks')">Задачи</button>
@@ -18,29 +18,36 @@
             <button class="tab" data-tab="ads" onclick="switchTab('ads')">Объявления</button>
         </nav>
         <div class="header-actions">
+            <div class="notif-bell" id="notifBell" onclick="toggleNotifPanel()">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                <span class="notif-badge hidden" id="notifBadge">0</span>
+                <div class="notif-panel hidden" id="notifPanel"></div>
+            </div>
             <button class="theme-toggle" id="themeToggle" onclick="toggleDarkQuick()" title="Переключить тему">☾</button>
             <button class="btn btn-sm" onclick="openSettingsModal()" title="Настройки">⚙</button>
-            <button class="btn btn-primary" onclick="openClientModal()">+ <span>Клиент</span></button>
         </div>
     </header>
 
-    <div class="search-bar" id="searchBar">
-        <input type="text" id="searchInput" placeholder="Поиск по имени, телефону, организации, email..." oninput="onSearch()">
-        <select id="filterStage" onchange="onSearch()"><option value="">Все этапы</option></select>
-        <div class="filter-group">
-            <select id="filterSource" onchange="onSearch()"><option value="">Все источники</option></select>
-            <button class="btn-filter-settings" onclick="openSourceModal()" title="Настроить источники">✎</button>
-        </div>
-        <div class="filter-group">
-            <select id="filterTag" onchange="onSearch()"><option value="">Все теги</option></select>
-            <button class="btn-filter-settings" onclick="openTagModal()" title="Настроить теги">✎</button>
-        </div>
-        <button class="btn" onclick="exportCSV()">CSV</button>
-        <button class="btn" onclick="openImportModal()">Импорт</button>
-    </div>
+    <div id="globalSyncStatus" class="hidden"><span id="globalSyncStatusText"></span><button class="sync-status-close" onclick="closeGlobalSyncStatus()">✕</button></div>
 
     <main>
         <div class="tab-content active" id="tab-pipeline">
+            <div class="search-bar" id="searchBar">
+                <input type="text" id="searchInput" placeholder="Поиск по имени, телефону, организации, email..." oninput="onSearch()">
+                <select id="filterStage" onchange="onSearch()"><option value="">Все этапы</option></select>
+                <div class="filter-group">
+                    <select id="filterSource" onchange="onSearch()"><option value="">Все источники</option></select>
+                    <button class="btn-filter-settings" onclick="openSourceModal()" title="Настроить источники">✎</button>
+                </div>
+                <div class="filter-group">
+                    <select id="filterTag" onchange="onSearch()"><option value="">Все теги</option></select>
+                    <button class="btn-filter-settings" onclick="openTagModal()" title="Настроить теги">✎</button>
+                </div>
+                <button class="btn btn-primary" onclick="openClientModal()">+ Клиент</button>
+                <button class="btn" onclick="exportCSV()">CSV</button>
+                <button class="btn" onclick="openImportModal()">Импорт</button>
+                <button class="btn" onclick="openManageStages()" title="Управление этапами">⚙</button>
+            </div>
             <div class="pipeline" id="pipeline"></div>
         </div>
 
@@ -79,6 +86,23 @@
                 <button type="submit" class="btn btn-primary">Сохранить</button>
                 <button type="button" class="btn" onclick="closeModal('stageModal')">Отмена</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Manage stages modal -->
+    <div class="modal-overlay hidden" id="manageStagesModal">
+        <div class="modal modal-wide">
+            <div class="modal-header">
+                <h2>Управление этапами воронки</h2>
+                <button class="btn btn-sm" onclick="closeManageStages()">✕</button>
+            </div>
+            <div class="manage-stages-list" id="manageStagesList"></div>
+            <div class="manage-stages-add">
+                <input type="text" id="newStageName" placeholder="Название нового этапа">
+                <input type="color" id="newStageColor" value="#3b82f6">
+                <button class="btn btn-sm btn-primary" onclick="addManagedStage()">+ Добавить</button>
+            </div>
+            <button class="btn" onclick="closeManageStages()" style="margin-top:12px">Готово</button>
         </div>
     </div>
 
@@ -226,21 +250,13 @@
                             <div class="info-row"><strong>Организация:</strong> <span id="detailOrg" class="editable" data-field="organization" onclick="inlineEdit(this)"></span></div>
                             <div class="info-row"><strong>Адрес:</strong> <span id="detailAddress" class="editable" data-field="address" onclick="inlineEdit(this)"></span></div>
                             <div class="info-row"><strong>Источник:</strong> <span id="detailSource" class="editable" data-field="source" onclick="inlineEdit(this)"></span></div>
+                            <div id="avitoInfo" class="hidden"></div>
                             <div class="info-row"><strong>Этап:</strong> <span id="detailStage" class="editable" data-field="stage_id" onclick="inlineEdit(this)"></span></div>
                             <div class="info-row"><strong>Ответственный:</strong> <span id="detailResponsible" class="editable" data-field="responsible" onclick="inlineEdit(this)"></span></div>
                             <div class="info-row"><strong>Бюджет:</strong> <span id="detailBudget" class="editable" data-field="budget" onclick="inlineEdit(this)"></span></div>
                         </div>
                         <div class="detail-tags" id="detailTags"></div>
-                        <div class="detail-avito hidden" id="detailAvito">
-                            <div class="info-row"><strong>Авито:</strong> <span id="detailAvitoPartner"></span></div>
-                            <div class="info-row"><a id="detailAvitoLink" href="#" target="_blank" style="font-size:13px">🔗 Открыть объявление</a></div>
-                            <div class="avito-chat-reply" id="avitoChatReply">
-                                <form onsubmit="sendAvitoReplyFromCard(event)">
-                                    <input type="text" id="avitoReplyInput" placeholder="Написать сообщение..." required>
-                                    <button type="submit" class="btn btn-sm btn-primary">→</button>
-                                </form>
-                            </div>
-                        </div>
+
                         <div class="detail-dates">
                             <span>Создан: <span id="detailCreated"></span></span>
                             <span>Обновлён: <span id="detailUpdated"></span></span>
@@ -317,6 +333,20 @@
         </div>
     </div>
 
+    <!-- Group management modal -->
+    <div class="modal-overlay hidden" id="groupModal" onclick="if(event.target===this)closeModal('groupModal')">
+        <div class="modal" style="max-width:500px" onclick="event.stopPropagation()">
+            <div class="modal-header"><span>Управление группами</span><button class="btn btn-sm" onclick="closeModal('groupModal')">✕</button></div>
+            <div class="modal-body" id="groupModalBody">
+                <div id="groupList"></div>
+                <div style="margin-top:12px;display:flex;gap:8px">
+                    <input type="text" id="newGroupName" placeholder="Название новой группы" style="flex:1">
+                    <button class="btn" onclick="addGroup()">+ Добавить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Stage dropdown (positioned dynamically) -->
     <div class="stage-dropdown hidden" id="stageDropdown"></div>
 
@@ -326,6 +356,35 @@
         <div class="context-item" onclick="contextAction('moveFirst')">В первый этап</div>
         <div class="context-item context-divider"></div>
         <div class="context-item context-danger" onclick="contextAction('delete')">Удалить</div>
+    </div>
+
+    <!-- Notification feed modal -->
+    <div class="modal-overlay hidden" id="notifFeedModal" onclick="if(event.target===this)closeModal('notifFeedModal')">
+        <div class="modal" style="max-width:520px">
+            <div class="modal-header">
+                <h2>Лента уведомлений</h2>
+                <button class="btn btn-sm" onclick="closeModal('notifFeedModal');pollNotifications()">✕</button>
+            </div>
+            <div class="modal-body notif-feed" id="notifFeedList"></div>
+        </div>
+    </div>
+
+    <!-- Task result modal -->
+    <div class="modal-overlay hidden" id="taskResultModal" onclick="if(event.target===this)taskResultCancel()">
+        <div class="modal" style="max-width:400px">
+            <div class="modal-header">
+                <h2>Результат выполнения задачи</h2>
+            </div>
+            <div class="modal-body">
+                <div id="taskResultTitle" style="font-size:13px;color:var(--text-muted);margin-bottom:10px;"></div>
+                <textarea id="taskResultInput" rows="3" placeholder="Опишите результат..." style="width:100%;resize:vertical;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);"></textarea>
+                <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+                    <button class="btn" onclick="taskResultCancel()">Отмена</button>
+                    <button class="btn" onclick="taskResultNoComment()">Без комментария</button>
+                    <button class="btn btn-primary" onclick="taskResultConfirm()">Сохранить</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="/app.js"></script>

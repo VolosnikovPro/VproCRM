@@ -23,6 +23,7 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 function fmtDate(d) { return new Date(d).toLocaleString('ru-RU'); }
 function fmtDateShort(d) { if (!d) return ''; const dt = new Date(d); return dt.toLocaleDateString('ru-RU'); }
 function fmtMoney(v) { return Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'; }
+function declOfNum(n, words) { return words[(n % 10 === 1 && n % 100 !== 11) ? 0 : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? 1 : 2]; }
 
 function switchTab(name) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -75,14 +76,14 @@ function renderPipeline() {
         col.className = 'kanban-column';
         col.innerHTML = `
             <div class="column-header" style="border-left: 3px solid ${stage.color}">
-                <span class="stage-color" style="background:${stage.color}"></span>
-                <span class="stage-info">${esc(stage.name)}</span>
-                <span class="stage-count">${sc.length}</span>
-                ${stage.total_budget > 0 ? `<span class="stage-budget">${fmtMoney(stage.total_budget)}</span>` : ''}
-                <div class="column-header-actions">
-                    <button class="btn btn-sm" onclick="event.stopPropagation(); openStageModal(${stage.id})">✎</button>
+                <div class="column-header-top">
+                    <span class="stage-color" style="background:${stage.color}"></span>
+                    <span class="stage-info">${esc(stage.name)}</span>
                     ${stage.name === 'Отказ' ? `<button class="btn btn-sm" onclick="event.stopPropagation(); openRejectionReasonsEditor()" title="Причины отказа">📋</button>` : ''}
-                    <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteStage(${stage.id})">✕</button>
+                </div>
+                <div class="column-header-stats">
+                    <span class="stage-count">${sc.length} ${declOfNum(sc.length, ['сделка','сделки','сделок'])}</span>
+                    ${stage.total_budget > 0 ? `<span class="stage-budget">${fmtMoney(stage.total_budget)}</span>` : ''}
                 </div>
             </div>
             <div class="column-body" data-stage-id="${stage.id}">
@@ -154,6 +155,32 @@ function createClientCard(client) {
     card.addEventListener('dragend', e => { card.style.opacity = '1'; });
     return card;
 }
+
+/* Pipeline drag-to-scroll */
+(function() {
+    let isDown = false, startX, scrollLeft;
+    const el = () => document.getElementById('pipeline');
+    document.addEventListener('mousedown', e => {
+        const p = el(); if (!p) return;
+        if (e.target.closest('.client-card, .add-stage-btn, .column-header button, .stage-btn, select, input, textarea, a')) return;
+        const rect = p.getBoundingClientRect();
+        if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+        isDown = true; startX = e.pageX - p.offsetLeft; scrollLeft = p.scrollLeft;
+        p.classList.add('grabbing');
+    });
+    document.addEventListener('mousemove', e => {
+        if (!isDown) return;
+        e.preventDefault();
+        const p = el(); if (!p) return;
+        const x = e.pageX - p.offsetLeft; const walk = (x - startX) * 1.5;
+        p.scrollLeft = scrollLeft - walk;
+    });
+    document.addEventListener('mouseup', () => {
+        if (!isDown) return;
+        isDown = false;
+        const p = el(); if (p) p.classList.remove('grabbing');
+    });
+})();
 
 /* Drag & Drop */
 document.addEventListener('dragover', e => { const col = e.target.closest('.column-body'); if (col) { e.preventDefault(); col.classList.add('drag-over'); } });
@@ -363,8 +390,97 @@ async function saveStage(e) {
 }
 async function deleteStage(id) {
     if (!confirm(`Удалить этап?`)) return;
-    await api(`/api/stages/${id}`, 'DELETE');
+    try { await api(`/api/stages/${id}`, 'DELETE'); } catch (e) { alert(e.message); return; }
     await loadData();
+}
+
+/* Manage stages */
+let _dragStageId = null;
+function openManageStages() {
+    document.getElementById('manageStagesModal').classList.remove('hidden');
+    renderManageStages();
+}
+function closeManageStages() {
+    closeModal('manageStagesModal');
+    loadData();
+}
+function renderManageStages() {
+    const list = document.getElementById('manageStagesList');
+    list.innerHTML = stages.map(s => `
+        <div class="manage-stage-item" draggable="true" data-stage-id="${s.id}" data-order="${s.order}">
+            <span class="stage-drag-handle" style="color:${esc(s.color)}">⠿</span>
+            <input type="color" value="${esc(s.color)}" onchange="updateStageColor(${s.id}, this.value)">
+            <input type="text" value="${esc(s.name)}" onchange="updateStageName(${s.id}, this.value)">
+            <span class="stage-client-count">${s.client_count} клиентов</span>
+            <button class="btn btn-sm btn-danger" onclick="deleteManagedStage(${s.id})" ${s.client_count > 0 ? 'disabled title="Сначала переместите клиентов"' : ''}>✕</button>
+        </div>
+    `).join('');
+    setupStageDragDrop();
+}
+function setupStageDragDrop() {
+    document.querySelectorAll('#manageStagesList .manage-stage-item').forEach(item => {
+        item.addEventListener('dragstart', e => {
+            _dragStageId = item.dataset.stageId;
+            item.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        item.addEventListener('dragend', e => { item.classList.remove('dragging'); });
+        item.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            document.querySelectorAll('#manageStagesList .manage-stage-item').forEach(i => i.classList.remove('drag-over'));
+            item.classList.add('drag-over');
+        });
+        item.addEventListener('dragleave', e => { item.classList.remove('drag-over'); });
+        item.addEventListener('drop', e => {
+            e.preventDefault();
+            document.querySelectorAll('#manageStagesList .manage-stage-item').forEach(i => i.classList.remove('drag-over'));
+            if (!_dragStageId || _dragStageId === item.dataset.stageId) return;
+            const fromIdx = stages.findIndex(s => s.id === Number(_dragStageId));
+            const toIdx = stages.findIndex(s => s.id === Number(item.dataset.stageId));
+            if (fromIdx === -1 || toIdx === -1) return;
+            const [removed] = stages.splice(fromIdx, 1);
+            stages.splice(toIdx, 0, removed);
+            stages.forEach((s, i) => s.order = i);
+            saveStageOrders();
+            renderManageStages();
+            renderPipeline();
+            _dragStageId = null;
+        });
+    });
+}
+async function saveStageOrders() {
+    for (const s of stages) {
+        await api(`/api/stages/${s.id}`, 'PUT', { name: s.name, order: s.order, color: s.color });
+    }
+}
+async function updateStageName(id, name) {
+    if (!name.trim()) return;
+    await api(`/api/stages/${id}`, 'PUT', { name: name.trim(), order: stages.find(s => s.id === id)?.order ?? 0, color: stages.find(s => s.id === id)?.color ?? '#6b7280' });
+    await loadData();
+    renderManageStages();
+}
+async function updateStageColor(id, color) {
+    await api(`/api/stages/${id}`, 'PUT', { name: stages.find(s => s.id === id)?.name ?? '', order: stages.find(s => s.id === id)?.order ?? 0, color });
+    await loadData();
+    renderManageStages();
+}
+async function addManagedStage() {
+    const name = document.getElementById('newStageName').value.trim();
+    if (!name) return;
+    const color = document.getElementById('newStageColor').value;
+    await api('/api/stages', 'POST', { name, order: stages.length, color });
+    document.getElementById('newStageName').value = '';
+    await loadData();
+    renderManageStages();
+}
+async function deleteManagedStage(id) {
+    const s = stages.find(x => x.id === id);
+    if (!s || s.client_count > 0) { alert('Нельзя удалить этап с клиентами'); return; }
+    if (!confirm(`Удалить этап "${s.name}"?`)) return;
+    try { await api(`/api/stages/${id}`, 'DELETE'); } catch (e) { alert(e.message); return; }
+    await loadData();
+    renderManageStages();
 }
 
 /* Source CRUD */
@@ -473,7 +589,16 @@ async function doImport() {
 async function openDetail(clientId) {
     currentClientId = clientId;
     currentClientData = null;
-    const client = await api(`/api/clients/${clientId}`);
+    let client;
+    try {
+        client = await api(`/api/clients/${clientId}`);
+    } catch (e) {
+        alert('Сделка удалена');
+        closeModal('detailModal');
+        await loadData();
+        pollNotifications();
+        return;
+    }
     currentClientData = client;
     const stage = stages.find(s => s.id === client.stage_id);
     document.getElementById('detailName').textContent = client.deal_name || client.name;
@@ -492,30 +617,38 @@ async function openDetail(clientId) {
     const tagsEl = document.getElementById('detailTags');
     tagsEl.innerHTML = (client.tags || []).map(t => `<span class="tag-badge" style="background:${t.color}">${esc(t.name)}</span>`).join('');
 
-    /* Avito link + messages */
-    let attachments = [], avitoMsgs = [], avitoChat = null;
+    /* Avito chat */
+    let attachments = [], avitoChat = null, avitoMsgs = [];
     try { attachments = await api(`/api/clients/${clientId}/attachments`); } catch {}
     try {
         avitoChat = await api(`/api/avito/client/${clientId}/chat`);
         if (avitoChat) {
-            // Sync messages from Avito API
             try { await api(`/api/avito/client/${clientId}/sync-messages`, 'POST'); } catch {}
+            try { await api(`/api/avito/client/${clientId}/mark-read`, 'POST'); } catch {}
+            pollNotifications();
             avitoMsgs = await api(`/api/avito/client/${clientId}/messages`);
         }
     } catch {}
-    renderTimeline(client, attachments, avitoMsgs, avitoChat);
+    renderTimeline(client, attachments, avitoChat, avitoMsgs);
 
-    /* Show Avito info */
-    const avitoSection = document.getElementById('detailAvito');
-    if (avitoChat && avitoChat.chat_id) {
-        avitoSection.classList.remove('hidden');
-        document.getElementById('detailAvitoPartner').textContent = avitoChat.item_title ? `${avitoChat.item_title} (${avitoChat.chat_id.slice(0,8)}...)` : `Чат ${avitoChat.chat_id.slice(0,8)}...`;
-        const link = document.getElementById('detailAvitoLink');
-        link.href = avitoChat.item_url || '#';
-        link.style.display = avitoChat.item_url ? 'inline' : 'none';
-        document.getElementById('avitoChatReply').dataset.chatId = avitoChat.chat_id;
+    /* Avito info in left panel */
+    const avitoInfoEl = document.getElementById('avitoInfo');
+    if (avitoChat) {
+        let html = `<div class="avito-detail-info">`;
+        if (avitoChat.item_title) {
+            html += `<div class="avito-detail-title">${esc(avitoChat.item_title)}</div>`;
+        }
+        if (avitoChat.item_url) {
+            html += `<a href="${esc(avitoChat.item_url)}" target="_blank" class="avito-detail-link">Открыть объявление</a>`;
+        }
+        if (avitoChat.address) {
+            html += `<div class="avito-detail-city">📍 ${esc(avitoChat.address)}</div>`;
+        }
+        html += `</div>`;
+        avitoInfoEl.innerHTML = html;
+        avitoInfoEl.classList.remove('hidden');
     } else {
-        avitoSection.classList.add('hidden');
+        avitoInfoEl.classList.add('hidden');
     }
 
     document.getElementById('noteContent').value = '';
@@ -527,9 +660,7 @@ async function openDetail(clientId) {
 function iconNote() { return '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 2h14v10H5l-3 3V2z"/></svg>'; }
 function iconTask() { return '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2"/><path d="M5 8l2 2 4-4"/></svg>'; }
 function iconFile() { return '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 14H3a1 1 0 01-1-1V3a1 1 0 011-1h6l4 4v7a1 1 0 01-1 1z"/><path d="M9 2v4h4"/></svg>'; }
-function iconAvito() { return '<img src="/avito.png" style="width:100%;height:100%;object-fit:cover" alt="Авито">'; }
-
-function renderTimeline(client, attachments, avitoMsgs, avitoChat) {
+function renderTimeline(client, attachments, avitoChat, avitoMsgs) {
     const el = document.getElementById('timeline');
     const items = [];
     const usedFileIds = new Set();
@@ -592,6 +723,9 @@ function renderTimeline(client, attachments, avitoMsgs, avitoChat) {
     (client.tasks || []).forEach(t => {
         const overdue = !t.completed && t.due_date && new Date(t.due_date) < new Date();
         const cls = t.completed ? 'tl-task-done' : (overdue ? 'tl-task-overdue' : '');
+        const completedMeta = t.completed && t.completed_at
+            ? `<div class="task-meta">Выполнена: ${fmtDate(t.completed_at)}${t.result_text ? ' — ' + esc(t.result_text) : ''}</div>`
+            : '';
         items.push({
             type: 'task',
             date: new Date(t.created_at),
@@ -599,12 +733,13 @@ function renderTimeline(client, attachments, avitoMsgs, avitoChat) {
                 <div class="tl-icon tl-task-icon">${iconTask()}</div>
                 <div class="tl-body ${cls}">
                     <label class="task-checkbox">
-                        <input type="checkbox" ${t.completed ? 'checked' : ''} onchange="toggleTask(${t.id}, this.checked)">
+                        <input type="checkbox" ${t.completed ? 'checked' : ''} onchange="toggleTask(${t.id}, this.checked, '${esc(t.title).replace(/'/g, "\\'")}', this)">
                         <span></span>
                     </label>
                     <div class="task-body">
                         <div class="task-title">${esc(t.title)}</div>
                         ${t.due_date ? `<div class="task-due">${fmtDate(t.due_date)}</div>` : ''}
+                        ${completedMeta}
                     </div>
                     <button class="btn btn-sm btn-danger" onclick="deleteTask(${t.id})">✕</button>
                 </div>
@@ -632,37 +767,56 @@ function renderTimeline(client, attachments, avitoMsgs, avitoChat) {
         });
     });
 
-    // Avito messages — chat bubbles
-    if (avitoMsgs && avitoMsgs.length > 0) {
+    // Avito messages as individual timeline entries (chronological with everything else)
+    if (avitoChat && avitoMsgs && avitoMsgs.length > 0) {
+        const chatId = avitoChat.chat_id;
         avitoMsgs.forEach(m => {
             const isMine = m.author_name === 'Вы';
-            const authorLabel = isMine ? (client.responsible || 'Вы') : (client.name || 'Клиент');
+            const isSystem = !m.author_name && (!m.payload || m.payload === 'system');
+            const bubbleClass = isSystem ? 'avito-tl-system-bubble' : (isMine ? 'avito-tl-mine' : 'avito-tl-theirs');
+            const sourceLabel = isSystem ? 'Авито' : `Авито · ${esc(m.author_name || 'Клиент')}`;
             items.push({
                 type: 'avito',
                 date: new Date(m.created_at),
                 html: `
-                    <div class="tl-icon tl-avito-icon">${iconAvito()}</div>
-                    <div class="avito-bubble ${isMine ? 'avito-bubble-mine' : 'avito-bubble-theirs'}">
-                        <div class="avito-bubble-text ${isMine ? '' : 'avito-msg-clickable'}" data-chat-id="${avitoChat?.chat_id || ''}" data-msg-id="${esc(m.message_id)}" ${isMine ? '' : 'onclick="toggleAvitoReply(this)"'}>${esc(m.content)}</div>
-                        <div class="avito-bubble-meta">
-                            <span class="avito-bubble-author">${esc(authorLabel)}</span>
-                            <span class="avito-bubble-time">${fmtDate(m.created_at)}</span>
-                            ${isMine ? `<span class="avito-read-status">${m.is_read ? '✓✓' : '✓'}</span>` : ''}
+                    <div class="tl-icon tl-avito-icon">
+                        <img src="/avito.png" alt="Avito">
+                    </div>
+                    <div class="tl-body">
+                        <div class="avito-tl-bubble ${bubbleClass}">
+                            <div class="avito-tl-text">${esc(m.content)}</div>
+                            <div class="avito-tl-meta">
+                                <span class="avito-tl-source">${sourceLabel}</span>
+                                <span class="avito-tl-date">${fmtDate(m.created_at)}</span>
+                                <span class="avito-tl-status">${m.is_read ? '✓✓' : '✓'}</span>
+                            </div>
                         </div>
-                        ${!isMine ? `<div class="avito-reply-box hidden" id="avitoReply-${esc(m.message_id)}">
-                            <form onsubmit="sendAvitoReply(event, '${esc(avitoChat?.chat_id || '')}', '${esc(m.message_id)}')" style="display:flex;gap:4px;margin-top:4px">
-                                <input type="text" placeholder="Ответить..." style="flex:1;font-size:13px;padding:4px 8px" required>
-                                <button type="submit" class="btn btn-sm btn-primary">→</button>
-                            </form>
-                        </div>` : ''}
                     </div>
                 `,
             });
         });
     }
 
-    // Sort by date descending (newest first)
-    items.sort((a, b) => b.date - a.date);
+    // Sort by date ascending (oldest first)
+    items.sort((a, b) => a.date - b.date);
+
+    // Reply input at the very bottom
+    if (avitoChat && avitoMsgs && avitoMsgs.length > 0) {
+        items.push({
+            type: 'avito-reply',
+            html: `
+                <div class="tl-icon tl-avito-icon">
+                    <img src="/avito.png" alt="Avito">
+                </div>
+                <div class="tl-body">
+                    <div class="avito-tl-reply">
+                        <input type="text" class="avito-reply-input" placeholder="Написать сообщение..." data-chat-id="${esc(avitoChat.chat_id)}">
+                        <button class="btn btn-sm btn-primary" onclick="sendAvitoReply(this)">Отправить</button>
+                    </div>
+                </div>
+            `,
+        });
+    }
 
     if (items.length === 0) {
         el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px 0;">Нет активности</div>';
@@ -703,7 +857,57 @@ async function deleteClientById(id) { if (!confirm('Удалить клиент�
 function editCurrentClient() { closeModal('detailModal'); openClientModal(currentClientId); }
 
 /* Tasks */
-async function toggleTask(taskId, completed) { await api(`/api/tasks/${taskId}`, 'PUT', { completed }); await openDetail(currentClientId); await loadData(); }
+let _pendingTaskId = null;
+let _pendingTaskTitle = null;
+
+function showTaskResultModal(taskId, taskTitle) {
+    _pendingTaskId = taskId;
+    _pendingTaskTitle = taskTitle;
+    document.getElementById('taskResultTitle').textContent = '«' + taskTitle + '»';
+    document.getElementById('taskResultInput').value = '';
+    document.getElementById('taskResultModal').classList.remove('hidden');
+    document.getElementById('taskResultInput').focus();
+}
+
+function taskResultConfirm() {
+    const text = document.getElementById('taskResultInput').value.trim();
+    _completeTask(_pendingTaskId, text || null, document.getElementById('_taskResultCheckbox'));
+    _pendingTaskId = null;
+}
+
+function taskResultNoComment() {
+    _completeTask(_pendingTaskId, null, document.getElementById('_taskResultCheckbox'));
+    _pendingTaskId = null;
+}
+
+function taskResultCancel() {
+    const el = document.getElementById('_taskResultCheckbox');
+    _pendingTaskId = null;
+    _pendingTaskTitle = null;
+    document.getElementById('taskResultModal').classList.add('hidden');
+    if (el) { el.checked = false; el.removeAttribute('id'); }
+}
+
+async function _completeTask(taskId, resultText, checkboxEl) {
+    document.getElementById('taskResultModal').classList.add('hidden');
+    if (checkboxEl) checkboxEl.removeAttribute('id');
+    const body = { completed: true };
+    if (resultText) body.result_text = resultText;
+    await api(`/api/tasks/${taskId}`, 'PUT', body);
+    await openDetail(currentClientId);
+    await loadData();
+}
+
+async function toggleTask(taskId, completed, taskTitle, checkboxEl) {
+    if (completed) {
+        checkboxEl.setAttribute('id', '_taskResultCheckbox');
+        showTaskResultModal(taskId, taskTitle);
+        return;
+    }
+    await api(`/api/tasks/${taskId}`, 'PUT', { completed: false });
+    await openDetail(currentClientId);
+    await loadData();
+}
 async function deleteTask(taskId) { if (!confirm('Удалить задачу?')) return; await api(`/api/tasks/${taskId}`, 'DELETE'); await openDetail(currentClientId); await loadData(); }
 async function addTask(e) {
     e.preventDefault();
@@ -1192,15 +1396,15 @@ async function refreshAds() {
     if (adsLoading) return;
     adsLoading = true;
     const tbody = document.getElementById('adsBody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="ads-loading">Загрузка...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="13" class="ads-loading">Загрузка...</td></tr>';
     try {
         const dateFrom = document.getElementById('adsDateFrom').value;
         const dateTo = document.getElementById('adsDateTo').value;
         const data = await api(`/api/avito/items?date_from=${dateFrom}&date_to=${dateTo}`);
         adsData = data;
-        applyAdsSort();
+        await applyAdsSort();
     } catch (e) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="11" class="ads-empty">Ошибка загрузки: ${esc(e.message)}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="13" class="ads-empty">Ошибка загрузки: ${esc(e.message)}</td></tr>`;
     } finally {
         adsLoading = false;
     }
@@ -1214,12 +1418,45 @@ function adsSort(col) {
     if (th) th.classList.add(adsSortDir === 1 ? 'sort-asc' : 'sort-desc');
 }
 
-function applyAdsSort() {
-    const tbody = document.getElementById('adsBody');
-    if (!tbody) return;
+async function applyAdsSort() {
+    if (groupsEnabled) {
+        if (!groupsData.length) await loadGroups();
+        if (groupsEnabled && groupsData.length) {
+            renderGroupedView();
+            return;
+        }
+    }
+    renderFlatView();
+}
+
+function renderFlatView() {
+    const container = document.getElementById('adsTableContainer');
+    if (!container) return;
     if (!adsData || adsData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" class="ads-empty">Объявления не найдены. Нажмите «Синхронизировать объявления»</td></tr>';
+        container.innerHTML = '<div class="ads-empty">Объявления не найдены. Нажмите «Синхронизировать объявления»</div>';
         return;
+    }
+    let tbody = document.getElementById('adsBody');
+    if (!tbody) {
+        container.innerHTML = '<table class="ads-table">' +
+            '<thead><tr>' +
+                '<th data-col="title" onclick="adsSort(\'title\')">Название</th>' +
+                '<th data-col="address" onclick="adsSort(\'address\')">Город</th>' +
+                '<th data-col="placed_at" onclick="adsSort(\'placed_at\')">Дата размещения</th>' +
+                '<th data-col="impressions" onclick="adsSort(\'impressions\')">Показы</th>' +
+                '<th>CV</th>' +
+                '<th data-col="views" onclick="adsSort(\'views\')">Просмотры</th>' +
+                '<th>CV</th>' +
+                '<th data-col="favorites" onclick="adsSort(\'favorites\')">Избранное</th>' +
+                '<th data-col="contacts" onclick="adsSort(\'contacts\')">Контакты</th>' +
+                '<th data-col="spent" onclick="adsSort(\'spent\')">Потрачено</th>' +
+                '<th data-col="price_per_view" onclick="adsSort(\'price_per_view\')">Цена просмотра</th>' +
+                '<th data-col="price_per_contact" onclick="adsSort(\'price_per_contact\')">Цена контакта</th>' +
+                '<th>Этапы воронки</th>' +
+            '</tr><tr id="adsTotalRow" class="ads-total-row"></tr></thead>' +
+            '<tbody id="adsBody"></tbody>' +
+        '</table>';
+        tbody = document.getElementById('adsBody');
     }
     // Stats date
     const dates = adsData.map(a => a.stats_updated_at).filter(Boolean);
@@ -1247,9 +1484,13 @@ function applyAdsSort() {
     if (totalRow) {
         const avgViewCost = hasSpent && hasViews ? sumSpent / sumViews : null;
         const avgContactCost = hasSpent && hasCont ? sumSpent / sumCont : null;
+        const cvImpViews = hasImp && hasViews ? sumViews / sumImp : null;
+        const cvViewsCont = hasViews && hasCont ? sumCont / sumViews : null;
         totalRow.innerHTML = '<td colspan="3" class="ads-total-label">Итого по всем объявлениям</td>'
             + `<td class="ads-total-val">${hasImp ? sumImp.toLocaleString('ru-RU') : '—'}</td>`
+            + `<td class="ads-total-val">${cvImpViews != null ? fmtCV(cvImpViews) : '—'}</td>`
             + `<td class="ads-total-val">${hasViews ? sumViews.toLocaleString('ru-RU') : '—'}</td>`
+            + `<td class="ads-total-val">${cvViewsCont != null ? fmtCV(cvViewsCont) : '—'}</td>`
             + `<td class="ads-total-val">${hasFav ? sumFav.toLocaleString('ru-RU') : '—'}</td>`
             + `<td class="ads-total-val">${hasCont ? sumCont.toLocaleString('ru-RU') : '—'}</td>`
             + `<td class="ads-total-val">${hasSpent ? fmtMoney(sumSpent) : '—'}</td>`
@@ -1268,6 +1509,8 @@ function applyAdsSort() {
         });
     }
     tbody.innerHTML = data.map(a => {
+        const cv1 = a.views && a.impressions ? a.views / a.impressions : null;
+        const cv2 = a.contacts && a.views ? a.contacts / a.views : null;
         const stages = (a.stage_stats || []).map(s =>
             `<span class="stage-dot" style="background:${esc(s.color)}"></span>${esc(s.stage_name)}: ${s.count}`
         ).join(' ');
@@ -1276,7 +1519,9 @@ function applyAdsSort() {
             <td>${esc(a.address)}</td>
             <td>${a.placed_at ? fmtDateShort(a.placed_at) : '—'}</td>
             <td>${a.impressions != null ? a.impressions.toLocaleString('ru-RU') : '—'}</td>
+            <td>${cv1 != null ? fmtCV(cv1) : '—'}</td>
             <td>${a.views != null ? a.views.toLocaleString('ru-RU') : '—'}</td>
+            <td>${cv2 != null ? fmtCV(cv2) : '—'}</td>
             <td>${a.favorites != null ? a.favorites.toLocaleString('ru-RU') : '—'}</td>
             <td>${a.contacts != null ? a.contacts.toLocaleString('ru-RU') : '—'}</td>
             <td>${a.spent != null ? fmtMoney(a.spent) : '—'}</td>
@@ -1285,6 +1530,286 @@ function applyAdsSort() {
             <td>${stages || '—'}</td>
         </tr>`;
     }).join('');
+}
+
+let groupsEnabled = false;
+let groupsData = [];
+
+async function loadGroups() {
+    try { groupsData = await api('/api/avito/groups'); }
+    catch { groupsData = []; }
+}
+
+async function loadGroupStats(dateFrom, dateTo) {
+    try { return await api('/api/avito/groups-stats?date_from=' + dateFrom + '&date_to=' + dateTo); }
+    catch { return []; }
+}
+
+async function toggleGroups() {
+    groupsEnabled = !groupsEnabled;
+    const toggle = document.getElementById('groupsToggle');
+    if (toggle) toggle.classList.toggle('active', groupsEnabled);
+    await applyAdsSort();
+}
+
+async function openGroupManager() {
+    await loadGroups();
+    const list = document.getElementById('groupList');
+    if (!list) return;
+    list.innerHTML = groupsData.map(g =>
+        '<div class="group-mgr-row">' +
+            '<span>' + esc(g.name) + '</span>' +
+            '<div>' +
+                '<button class="btn btn-sm" onclick="renameGroup(' + g.id + ', ' + JSON.stringify(g.name) + ')">✏️</button>' +
+                '<button class="btn btn-sm" onclick="deleteGroup(' + g.id + ', ' + JSON.stringify(g.name) + ')">✕</button>' +
+            '</div>' +
+        '</div>'
+    ).join('');
+    document.getElementById('groupModal').classList.remove('hidden');
+}
+
+async function addGroup() {
+    const input = document.getElementById('newGroupName');
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+        await api('/api/avito/groups', 'POST', {name: name});
+        input.value = '';
+        openGroupManager();
+        refreshAds();
+    } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
+async function renameGroup(id, currentName) {
+    const name = prompt('Новое название:', currentName);
+    if (!name || name === currentName) return;
+    try {
+        await api('/api/avito/groups/' + id, 'PUT', {name: name});
+        openGroupManager();
+        refreshAds();
+    } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
+async function deleteGroup(id, name) {
+    if (!confirm('Удалить группу "' + name + '"? Объявления будут перенесены в Неопределено.')) return;
+    try {
+        await api('/api/avito/groups/' + id, 'DELETE');
+        openGroupManager();
+        refreshAds();
+    } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
+async function renderGroupedView() {
+    await loadGroups();
+    if (!groupsEnabled || !groupsData.length) {
+        if (!groupsEnabled) {
+            const toggle = document.getElementById('groupsToggle');
+            if (toggle) toggle.classList.remove('active');
+        }
+        renderFlatView();
+        return;
+    }
+    const dateFrom = document.getElementById('adsDateFrom').value;
+    const dateTo = document.getElementById('adsDateTo').value;
+    const stats = await loadGroupStats(dateFrom, dateTo);
+    const statsMap = {};
+    for (const s of stats) statsMap[s.id] = s;
+
+    const grouped = {};
+    for (const g of groupsData) grouped[g.id] = [];
+    const defaultGroup = groupsData.find(g => g.name === 'Неопределено');
+    for (const a of adsData) {
+        const gid = a.group_id || (defaultGroup ? defaultGroup.id : null);
+        if (gid && grouped[gid]) grouped[gid].push(a);
+        else if (defaultGroup) grouped[defaultGroup.id].push(a);
+    }
+
+    // Stats date
+    const dates = adsData.map(a => a.stats_updated_at).filter(Boolean);
+    const dateEl = document.getElementById('adsStatsDate');
+    if (dateEl) {
+        if (dates.length) {
+            const latest = dates.reduce((a, b) => new Date(a) > new Date(b) ? a : b);
+            const d = new Date(latest);
+            dateEl.textContent = 'Статистика обновлена: ' + d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        } else {
+            dateEl.textContent = 'Статистика не загружена. Нажмите «Обновить статистику»';
+        }
+    }
+
+    const container = document.getElementById('adsTableContainer');
+    if (!container) return;
+
+    // Helper: compute totals for an array of items
+    function itemTotals(items) {
+        const t = { impressions: 0, views: 0, favorites: 0, contacts: 0, spent: 0 };
+        const h = { impressions: 0, views: 0, favorites: 0, contacts: 0, spent: 0 };
+        for (const a of items) {
+            if (a.impressions != null) { t.impressions += a.impressions; h.impressions++; }
+            if (a.views != null) { t.views += a.views; h.views++; }
+            if (a.favorites != null) { t.favorites += a.favorites; h.favorites++; }
+            if (a.contacts != null) { t.contacts += a.contacts; h.contacts++; }
+            if (a.spent != null) { t.spent += a.spent; h.spent++; }
+        }
+        t.has = h;
+        return t;
+    }
+
+    // Overall totals
+    const overall = itemTotals(adsData);
+    const avgViewCost = overall.has.spent && overall.has.views ? overall.spent / overall.views : null;
+    const avgContactCost = overall.has.spent && overall.has.contacts ? overall.spent / overall.contacts : null;
+
+    // Table headers (same as flat view + checkbox)
+    function cell(v, fmt) { return '<td class="ads-total-val">' + (v != null ? (fmt ? fmt(v) : v.toLocaleString('ru-RU')) : '—') + '</td>'; }
+    function money(v) { return v != null ? fmtMoney(v) : '—'; }
+
+    function totalRow(label, totals) {
+        const c = totals;
+        const avgV = c.spent && c.views ? c.spent / c.views : null;
+        const avgC = c.spent && c.contacts ? c.spent / c.contacts : null;
+        const cv1 = c.impressions && c.views ? c.views / c.impressions : null;
+        const cv2 = c.views && c.contacts ? c.contacts / c.views : null;
+        return '<tr class="ads-total-row">' +
+            '<td></td>' +
+            '<td colspan="3" class="ads-total-label">' + label + '</td>' +
+            cell(c.impressions) +
+            cell(cv1, fmtCV) +
+            cell(c.views) +
+            cell(cv2, fmtCV) +
+            cell(c.favorites) +
+            cell(c.contacts) +
+            cell(c.spent, money) +
+            cell(avgV, money) +
+            cell(avgC, money) +
+            '<td></td>' +
+        '</tr>';
+    }
+
+    const th = '<th data-col="title" onclick="adsSort(\'title\')">Название</th>' +
+        '<th data-col="address" onclick="adsSort(\'address\')">Город</th>' +
+        '<th data-col="placed_at" onclick="adsSort(\'placed_at\')">Дата</th>' +
+        '<th data-col="impressions" onclick="adsSort(\'impressions\')">Показы</th>' +
+        '<th>CV</th>' +
+        '<th data-col="views" onclick="adsSort(\'views\')">Просмотры</th>' +
+        '<th>CV</th>' +
+        '<th data-col="favorites" onclick="adsSort(\'favorites\')">Избранное</th>' +
+        '<th data-col="contacts" onclick="adsSort(\'contacts\')">Контакты</th>' +
+        '<th data-col="spent" onclick="adsSort(\'spent\')">Потрачено</th>' +
+        '<th data-col="price_per_view" onclick="adsSort(\'price_per_view\')">Цена просмотра</th>' +
+        '<th data-col="price_per_contact" onclick="adsSort(\'price_per_contact\')">Цена контакта</th>' +
+        '<th>Этапы</th>';
+
+    // Overall totals section
+    let html = '<div class="group-overall">' +
+        '<table class="ads-table">' +
+            '<thead><tr><th style="width:30px"></th>' + th + '</tr>' + totalRow('Итого по всем объявлениям', overall) + '</thead>' +
+        '</table>' +
+    '</div>';
+
+    // Per-group sections
+    for (const g of groupsData) {
+        const items = grouped[g.id] || [];
+        const grpStats = statsMap[g.id];
+        const tot = itemTotals(items);
+
+        html += '<div class="group-section">' +
+            '<div class="group-header" onclick="toggleGroupSection(this)">' +
+                '<span class="group-toggle">&#9660;</span>' +
+                '<span class="group-name">' + esc(g.name) + '</span>' +
+                '<span class="group-count">(' + items.length + ')</span>' +
+            '</div>' +
+            '<div class="group-body">' +
+                '<table class="ads-table">' +
+                    '<thead><tr>' +
+                        '<th style="width:30px"><input type="checkbox" onchange="toggleGroupSelect(this, ' + g.id + ')"></th>' +
+                        th +
+                    '</tr>' + totalRow('Итого по ' + esc(g.name), tot) + '</thead>' +
+                    '<tbody>' +
+                        items.map(function(a) {
+                            const stages = (a.stage_stats || []).map(function(s) {
+                                return '<span class="stage-dot" style="background:' + esc(s.color) + '"></span>' + esc(s.stage_name) + ': ' + s.count;
+                            }).join(' ');
+                            return '<tr>' +
+                                '<td><input type="checkbox" class="item-checkbox" data-item-id="' + a.avito_item_id + '" onchange="updateMovePanel()"></td>' +
+                                '<td><a href="' + esc(a.url) + '" target="_blank">' + esc(a.title) + '</a></td>' +
+                                '<td>' + esc(a.address) + '</td>' +
+                                '<td>' + (a.placed_at ? fmtDateShort(a.placed_at) : '—') + '</td>' +
+                                '<td>' + (a.impressions != null ? a.impressions.toLocaleString('ru-RU') : '—') + '</td>' +
+                                '<td>' + (a.views && a.impressions ? fmtCV(a.views / a.impressions) : '—') + '</td>' +
+                                '<td>' + (a.views != null ? a.views.toLocaleString('ru-RU') : '—') + '</td>' +
+                                '<td>' + (a.contacts && a.views ? fmtCV(a.contacts / a.views) : '—') + '</td>' +
+                                '<td>' + (a.favorites != null ? a.favorites.toLocaleString('ru-RU') : '—') + '</td>' +
+                                '<td>' + (a.contacts != null ? a.contacts.toLocaleString('ru-RU') : '—') + '</td>' +
+                                '<td>' + (a.spent != null ? fmtMoney(a.spent) : '—') + '</td>' +
+                                '<td>' + (a.price_per_view != null ? fmtMoney(a.price_per_view) : '—') + '</td>' +
+                                '<td>' + (a.price_per_contact != null ? fmtMoney(a.price_per_contact) : '—') + '</td>' +
+                                '<td>' + (stages || '—') + '</td>' +
+                            '</tr>';
+                        }).join('') +
+                    '</tbody>' +
+                '</table>' +
+            '</div>' +
+        '</div>';
+    }
+
+    html += '<div class="move-panel hidden" id="movePanel">' +
+        '<span id="selectedCount">Выбрано: 0</span>' +
+        '<select id="moveTargetGroup">' +
+            groupsData.map(function(g) { return '<option value="' + g.id + '">' + esc(g.name) + '</option>'; }).join('') +
+        '</select>' +
+        '<button class="btn btn-sm" onclick="moveSelectedItems()">Перенести</button>' +
+    '</div>';
+
+    container.innerHTML = html;
+}
+
+function toggleGroupSection(header) {
+    const body = header.nextElementSibling;
+    const toggle = header.querySelector('.group-toggle');
+    if (body) {
+        body.classList.toggle('collapsed');
+        toggle.textContent = body.classList.contains('collapsed') ? '▶' : '▼';
+    }
+}
+
+function toggleGroupSelect(checkbox, groupId) {
+    const section = checkbox.closest('.group-section');
+    if (section) {
+        const items = section.querySelectorAll('.item-checkbox');
+        for (const cb of items) cb.checked = checkbox.checked;
+    }
+    updateMovePanel();
+}
+
+function updateMovePanel() {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    const panel = document.getElementById('movePanel');
+    const count = document.getElementById('selectedCount');
+    if (!panel || !count) return;
+    if (checked.length === 0) {
+        panel.classList.add('hidden');
+        return;
+    }
+    panel.classList.remove('hidden');
+    count.textContent = 'Выбрано: ' + checked.length;
+}
+
+async function moveSelectedItems() {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    const groupId = parseInt(document.getElementById('moveTargetGroup').value);
+    const itemIds = Array.from(checked).map(function(cb) { return parseInt(cb.dataset.itemId); });
+    try {
+        await api('/api/avito/items/move-group', 'POST', {item_ids: itemIds, group_id: groupId});
+        refreshAds();
+    } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
+function fmtNum(v) {
+    return v ? v.toLocaleString('ru-RU') : '—';
+}
+function fmtCV(v) {
+    return (v * 100).toFixed(1) + '%';
 }
 
 async function renderAds() {
@@ -1297,6 +1822,17 @@ async function renderAds() {
         return;
     }
     try { statsInfo = await api('/api/avito/stats-info'); } catch { statsInfo = { has_data: false }; }
+    if (!_syncPollTimer) {
+        if (statsInfo.sync_running) {
+            const msg = `Загрузка... ${statsInfo.sync_synced}/${statsInfo.sync_total} дней`;
+            _setSyncStatus(msg, true);
+            _pollSyncProgress();
+        } else if (statsInfo.sync_error) {
+            _setSyncStatus(`Ошибка: ${statsInfo.sync_error}`, false);
+        } else {
+            // keep _lastSyncStatus as-is (completed message or empty)
+        }
+    }
     const statsBtn = statsInfo.has_data
         ? '<button class="btn" onclick="refreshAvitoStats()">Обновить статистику</button>'
         : '<button class="btn" onclick="showSyncStatsModal()">Загрузить статистику</button>';
@@ -1304,7 +1840,12 @@ async function renderAds() {
         <div class="ads-toolbar">
             <button class="btn" onclick="syncAvitoItems()">Синхронизировать объявления</button>
             ${statsBtn}
-            <span id="adsSyncStatus"></span>
+            <label class="toggle-group${groupsEnabled ? ' active' : ''}" id="groupsToggle" onclick="toggleGroups()">
+                <span class="toggle-slider"></span>
+                <span>Группы</span>
+            </label>
+            <button class="btn btn-sm" onclick="openGroupManager()">Управление группами</button>
+            <span id="adsSyncStatus">${esc(_lastSyncStatus.message)}</span>
         </div>
         <div class="date-selector">
             <button class="btn btn-sm" data-range="today" onclick="setAdsRange('today')">День</button>
@@ -1319,25 +1860,29 @@ async function renderAds() {
             </span>
         </div>
         <div class="ads-stats-date" id="adsStatsDate"></div>
-        <table class="ads-table">
-            <thead>
-                <tr>
-                    <th data-col="title" onclick="adsSort('title')">Название</th>
-                    <th data-col="address" onclick="adsSort('address')">Город</th>
-                    <th data-col="placed_at" onclick="adsSort('placed_at')">Дата размещения</th>
-                    <th data-col="impressions" onclick="adsSort('impressions')">Показы</th>
-                    <th data-col="views" onclick="adsSort('views')">Просмотры</th>
-                    <th data-col="favorites" onclick="adsSort('favorites')">Избранное</th>
-                    <th data-col="contacts" onclick="adsSort('contacts')">Контакты</th>
-                    <th data-col="spent" onclick="adsSort('spent')">Потрачено</th>
-                    <th data-col="price_per_view" onclick="adsSort('price_per_view')">Цена просмотра</th>
-                    <th data-col="price_per_contact" onclick="adsSort('price_per_contact')">Цена контакта</th>
-                    <th>Этапы воронки</th>
-                </tr>
-                <tr id="adsTotalRow" class="ads-total-row"></tr>
-            </thead>
-            <tbody id="adsBody"><tr><td colspan="11" class="ads-loading">Загрузка...</td></tr></tbody>
-        </table>`;
+        <div id="adsTableContainer">
+            <table class="ads-table">
+                <thead>
+                    <tr>
+                        <th data-col="title" onclick="adsSort('title')">Название</th>
+                        <th data-col="address" onclick="adsSort('address')">Город</th>
+                        <th data-col="placed_at" onclick="adsSort('placed_at')">Дата размещения</th>
+                        <th data-col="impressions" onclick="adsSort('impressions')">Показы</th>
+                        <th>CV</th>
+                        <th data-col="views" onclick="adsSort('views')">Просмотры</th>
+                        <th>CV</th>
+                        <th data-col="favorites" onclick="adsSort('favorites')">Избранное</th>
+                        <th data-col="contacts" onclick="adsSort('contacts')">Контакты</th>
+                        <th data-col="spent" onclick="adsSort('spent')">Потрачено</th>
+                        <th data-col="price_per_view" onclick="adsSort('price_per_view')">Цена просмотра</th>
+                        <th data-col="price_per_contact" onclick="adsSort('price_per_contact')">Цена контакта</th>
+                        <th>Этапы воронки</th>
+                    </tr>
+                    <tr id="adsTotalRow" class="ads-total-row"></tr>
+                </thead>
+                <tbody id="adsBody"><tr><td colspan="13" class="ads-loading">Загрузка...</td></tr></tbody>
+            </table>
+        </div>`;
     setAdsRange(adsRange);
 }
 
@@ -1355,25 +1900,24 @@ async function syncAvitoItems() {
 }
 
 async function refreshAvitoStats() {
-    const statusEl = document.getElementById('adsSyncStatus');
-    if (!statusEl) return;
-    statusEl.textContent = 'Обновление статистики...';
+    _setSyncStatus('Обновление статистики...', true);
     try {
         const res = await api('/api/avito/refresh-stats', 'POST');
         if (res.need_choice) {
-            statusEl.textContent = '';
+            _setSyncStatus('', false);
             showRefreshChoiceModal(res.last_date);
             return;
         }
         if (res.status === 'started') {
-            statusEl.textContent = `Синхронизация запущена (${res.total_days} дней)...`;
-            _pollSyncProgress(statusEl);
+            _setSyncStatus(`Синхронизация запущена (${res.total_days} дней)...`, true);
+            _pollSyncProgress();
             return;
         }
-        statusEl.textContent = `Статистика обновлена. Добавлено дней: ${res.synced_days || 0}`;
+        const msg = `Статистика обновлена. Добавлено дней: ${res.synced_days || 0}`;
+        _setSyncStatus(msg, false);
         refreshAds();
     } catch (e) {
-        statusEl.textContent = `Ошибка: ${e.message}`;
+        _setSyncStatus(`Ошибка: ${e.message}`, false);
     }
 }
 
@@ -1392,19 +1936,19 @@ function showSyncStatsModal() {
 }
 
 let _syncPollTimer = null;
+let _lastSyncStatus = { message: '', running: false };
 
 async function startSyncStats(days) {
     closeModal('statsSyncModal');
-    const statusEl = document.getElementById('adsSyncStatus');
-    if (statusEl) statusEl.textContent = 'Загрузка статистики...';
+    _setSyncStatus('Загрузка статистики...', true);
     try {
         const res = await api(`/api/avito/sync-stats?days=${days}`, 'POST');
         if (res.status === 'started') {
-            if (statusEl) statusEl.textContent = `Синхронизация запущена (${res.total_days} дней)...`;
-            _pollSyncProgress(statusEl);
+            _setSyncStatus(`Синхронизация запущена (${res.total_days} дней)...`, true);
+            _pollSyncProgress();
         }
     } catch (e) {
-        if (statusEl) statusEl.textContent = `Ошибка: ${e.message}`;
+        _setSyncStatus(`Ошибка: ${e.message}`, false);
     }
 }
 
@@ -1425,17 +1969,32 @@ function showRefreshChoiceModal(lastDate) {
 
 async function refreshWithMode(mode) {
     closeModal('statsSyncModal');
-    const statusEl = document.getElementById('adsSyncStatus');
-    if (statusEl) statusEl.textContent = 'Обновление статистики...';
+    _setSyncStatus('Обновление статистики...', true);
     try {
         const res = await api(`/api/avito/refresh-stats?mode=${mode}`, 'POST');
         if (res.status === 'started') {
-            if (statusEl) statusEl.textContent = `Синхронизация запущена (${res.total_days} дней)...`;
-            _pollSyncProgress(statusEl);
+            _setSyncStatus(`Синхронизация запущена (${res.total_days} дней)...`, true);
+            _pollSyncProgress();
         }
     } catch (e) {
-        if (statusEl) statusEl.textContent = `Ошибка: ${e.message}`;
+        _setSyncStatus(`Ошибка: ${e.message}`, false);
     }
+}
+
+function _setSyncStatus(msg, running) {
+    _lastSyncStatus = { message: msg, running };
+    const adsEl = document.getElementById('adsSyncStatus');
+    const globalEl = document.getElementById('globalSyncStatus');
+    const globalText = document.getElementById('globalSyncStatusText');
+    if (adsEl) adsEl.textContent = msg;
+    if (globalEl && globalText) {
+        globalText.textContent = msg;
+        globalEl.classList.toggle('hidden', !msg);
+    }
+}
+
+function closeGlobalSyncStatus() {
+    _setSyncStatus('', false);
 }
 
 async function _pollSyncProgress(statusEl) {
@@ -1444,15 +2003,19 @@ async function _pollSyncProgress(statusEl) {
         try {
             const info = await api('/api/avito/stats-info');
             if (info.sync_error) {
-                statusEl.textContent = `Ошибка: ${info.sync_error}`;
+                const msg = `Ошибка: ${info.sync_error}`;
+                _setSyncStatus(msg, false);
                 clearInterval(_syncPollTimer);
                 _syncPollTimer = null;
                 return;
             }
             if (info.sync_running) {
-                statusEl.textContent = `Загрузка... ${info.sync_synced}/${info.sync_total} дней`;
+                _setSyncStatus(`Загрузка... ${info.sync_synced}/${info.sync_total} дней`, true);
             } else {
-                statusEl.textContent = `Синхронизация завершена. Загружено дней: ${info.sync_synced}`;
+                const dataDate = info.last_data_date ? ` (данные до ${info.last_data_date})` : '';
+                const syncTime = info.last_sync_attempt ? ` [${info.last_sync_attempt}]` : '';
+                const msg = `Синхронизация завершена${dataDate}${syncTime}. Загружено дней: ${info.sync_synced}`;
+                _setSyncStatus(msg, false);
                 clearInterval(_syncPollTimer);
                 _syncPollTimer = null;
                 refreshAds();
@@ -1528,19 +2091,61 @@ async function saveAvitoConfig() {
     }
 }
 
-/* ── Avito background sync ── */
+/* ── Avito background sync & notifications ── */
 let avitoPollTimer = null;
+let _knownUnread = {};
+
+function playNotifSound() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = 800; osc.type = 'sine';
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
+    } catch (e) { /* ignore */ }
+}
+
+function showAvitoNotif(title, body, clientId) {
+    playNotifSound();
+    if (Notification.permission === 'granted') {
+        const n = new Notification('Авито: ' + title, { body, icon: '/avito.png', tag: 'avito-msg' });
+        n.onclick = () => { window.focus(); if (clientId) openDetail(clientId); n.close(); };
+    }
+}
+
+async function checkNewAvitoMessages() {
+    try {
+        const chats = await api('/api/avito/chats');
+        for (const chat of chats) {
+            const prev = _knownUnread[chat.chat_id] || 0;
+            if (chat.unread_count > prev && chat.client_id && chat.last_message_preview) {
+                const clientName = chat.client_name || chat.other_user_name || 'Клиент';
+                showAvitoNotif(chat.item_title || clientName, chat.last_message_preview, chat.client_id);
+            }
+            _knownUnread[chat.chat_id] = chat.unread_count;
+        }
+    } catch (e) { /* ignore */ }
+}
 
 function startAvitoSyncTimer() {
     if (avitoPollTimer) clearInterval(avitoPollTimer);
     avitoPollTimer = setInterval(async () => {
         try {
             await api('/api/avito/sync', 'POST');
+            clients = await api('/api/clients');
             renderPipeline();
+            checkNewAvitoMessages();
         } catch (e) {
             // silently ignore
         }
     }, 60000);
+    // Request notification permission
+    if (Notification.permission === 'default') Notification.requestPermission();
+    // Initial check
+    setTimeout(checkNewAvitoMessages, 5000);
 }
 
 function stopAvitoSyncTimer() {
@@ -1555,68 +2160,36 @@ async function syncAvito() {
     if (el) el.textContent = '⏳ Синхронизация...';
     try {
         await api('/api/avito/sync', 'POST');
+        clients = await api('/api/clients');
+        renderPipeline();
         if (el) el.innerHTML = '<span style="color:var(--success)">✅ Синхронизация выполнена</span>';
     } catch (err) {
         if (el) el.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(err.message) + '</span>';
     }
 }
 
-/* Avito reply from deal card */
-async function sendAvitoReplyFromCard(e) {
-    e.preventDefault();
-    const inp = document.getElementById('avitoReplyInput');
-    if (!inp || !inp.value.trim()) return;
-    const chatId = document.getElementById('avitoChatReply').dataset.chatId;
-    if (!chatId) { alert('Чат Авито не найден'); return; }
-    const content = inp.value.trim();
-    inp.value = '';
+async function sendAvitoReply(btn) {
+    const replyDiv = btn.closest('.avito-tl-reply');
+    const input = replyDiv.querySelector('.avito-reply-input');
+    const chatId = input.dataset.chatId;
+    const content = input.value.trim();
+    if (!content) return;
+    btn.disabled = true;
     try {
-        await api('/api/avito/chats/' + chatId + '/messages', 'POST', { content });
-        // Refresh
-        const clientId = currentClientId;
-        if (clientId) {
-            const avitoMsgs = await api('/api/avito/client/' + clientId + '/messages');
-            const avitoChat = await api('/api/avito/client/' + clientId + '/chat');
-            const client = await api('/api/clients/' + clientId);
-            let attachments = [];
-            try { attachments = await api('/api/clients/' + clientId + '/attachments'); } catch {}
-            renderTimeline(client, attachments, avitoMsgs, avitoChat);
+        await api(`/api/avito/chats/${chatId}/messages`, 'POST', { content });
+        input.value = '';
+        if (currentClientId) {
+            try { await api(`/api/avito/client/${currentClientId}/sync-messages`, 'POST'); } catch {}
+            const msgs = await api(`/api/avito/client/${currentClientId}/messages`);
+            const client = await api(`/api/clients/${currentClientId}`);
+            const attachments = await api(`/api/clients/${currentClientId}/attachments`).catch(() => []);
+            const avitoChat = await api(`/api/avito/client/${currentClientId}/chat`).catch(() => null);
+            renderTimeline(client, attachments, avitoChat, msgs);
         }
     } catch (err) {
         alert('Ошибка отправки: ' + err.message);
-        inp.value = content;
-    }
-}
-
-/* Avito timeline reply helpers */
-function toggleAvitoReply(el) {
-    const msgId = el.dataset.msgId;
-    const box = document.getElementById('avitoReply-' + msgId);
-    if (!box) return;
-    box.classList.toggle('hidden');
-    if (!box.classList.contains('hidden')) {
-        const inp = box.querySelector('input');
-        if (inp) setTimeout(() => inp.focus(), 100);
-    }
-}
-
-async function sendAvitoReply(e, chatId, msgId) {
-    e.preventDefault();
-    const inp = e.target.querySelector('input');
-    if (!inp || !inp.value.trim()) return;
-    const content = inp.value.trim();
-    inp.value = '';
-    if (!chatId) { alert('Чат Авито не найден'); return; }
-    await api('/api/avito/chats/' + chatId + '/messages', 'POST', { content });
-    // Refresh timeline messages
-    const clientId = currentClientId;
-    if (clientId) {
-        const avitoMsgs = await api('/api/avito/client/' + clientId + '/messages');
-        const avitoChat = await api('/api/avito/client/' + clientId + '/chat');
-        const client = await api('/api/clients/' + clientId);
-        let attachments = [];
-        try { attachments = await api('/api/clients/' + clientId + '/attachments'); } catch {}
-        renderTimeline(client, attachments, avitoMsgs, avitoChat);
+    } finally {
+        btn.disabled = false;
     }
 }
 
@@ -1640,6 +2213,156 @@ async function disconnectAvito() {
         alert('Ошибка: ' + err.message);
     }
 }
+
+/* ── Notification bell ── */
+async function pollNotifications() {
+    try {
+        const data = await api('/api/notifications?feed=false');
+        const badge = document.getElementById('notifBadge');
+        if (badge) {
+            if (data.total > 0) {
+                badge.textContent = data.total > 99 ? '99+' : data.total;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+        }
+        window._lastNotifData = data;
+        const panel = document.getElementById('notifPanel');
+        if (panel && !panel.classList.contains('hidden')) {
+            renderNotifPanel();
+        }
+    } catch (e) { /* ignore */ }
+}
+
+function renderNotifPanel() {
+    const panel = document.getElementById('notifPanel');
+    if (!panel) return;
+    const data = window._lastNotifData || { items: [] };
+    const colors = { avito_message: '#6b47dc', overdue_task: 'var(--danger)', new_client: 'var(--success)' };
+    let html = '<div class="notif-feed-link" onclick="openNotifFeed()">📋 Все уведомления</div>';
+    html += '<div class="notif-panel-scroll">';
+    if (!data.items.length) {
+        html += '<div class="notif-empty">Нет непрочитанных</div>';
+    } else {
+        html += data.items.map(n => {
+            const color = colors[n.type] || 'var(--text-muted)';
+            const onclick = n.link_id ? `onclick="notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
+            return `<div class="notif-item" ${onclick}>
+                <span class="notif-dot" style="background:${color}"></span>
+                <div><div class="notif-title">${esc(n.message)}</div>
+                ${n.time ? '<div class="notif-time">' + esc(n.time.slice(0, 16).replace('T', ' ')) + '</div>' : ''}</div>
+            </div>`;
+        }).join('');
+    }
+    html += '</div>';
+    if (data.items.length) {
+        html += '<div class="notif-mark-all" onclick="markAllNotifRead()">✓ Отметить всё прочитанным</div>';
+    }
+    panel.innerHTML = html;
+}
+
+async function markAllNotifRead() {
+    try {
+        await api('/api/notifications/read-all', 'POST');
+        pollNotifications();
+    } catch (e) { /* ignore */ }
+}
+
+function toggleNotifPanel() {
+    const panel = document.getElementById('notifPanel');
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+        renderNotifPanel();
+    }
+}
+
+async function openNotifFeed() {
+    toggleNotifPanel();
+    try {
+        const data = await api('/api/notifications?feed=true');
+        const modal = document.getElementById('notifFeedModal');
+        const list = document.getElementById('notifFeedList');
+        if (!list) return;
+        const typeConfig = {
+            avito_message: { icon: '💬', color: '#6b47dc', label: 'Авито' },
+            overdue_task: { icon: '⏰', color: '#e53935', label: 'Задача' },
+            new_client: { icon: '👤', color: '#43a047', label: 'Новый клиент' },
+        };
+        if (!data.items.length) {
+            list.innerHTML = '<div class="notif-feed-empty"><div class="notif-feed-empty-icon">🔔</div><div>Нет уведомлений за последние 7 дней</div></div>';
+        } else {
+            const groups = {};
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            data.items.forEach(n => {
+                const d = new Date(n.time);
+                const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+                let groupKey;
+                if (dayStart.getTime() === today.getTime()) groupKey = 'Сегодня';
+                else if (dayStart.getTime() === yesterday.getTime()) groupKey = 'Вчера';
+                else groupKey = 'Ранее';
+                if (!groups[groupKey]) groups[groupKey] = [];
+                groups[groupKey].push(n);
+            });
+            const order = ['Сегодня', 'Вчера', 'Ранее'];
+            list.innerHTML = order.filter(g => groups[g]).map(g => {
+                const items = groups[g].map(n => {
+                    const cfg = typeConfig[n.type] || { icon: '•', color: 'var(--text-muted)', label: '' };
+                    const onclick = n.link_id ? `onclick="closeModal('notifFeedModal');notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
+                    const time = n.time ? n.time.slice(11, 16) : '';
+                    return `<div class="notif-feed-item" ${onclick}>
+                        <div class="notif-feed-icon" style="background:${cfg.color}15;color:${cfg.color}">${cfg.icon}</div>
+                        <div class="notif-feed-body">
+                            <div class="notif-feed-text">${esc(n.message)}</div>
+                            <div class="notif-feed-meta"><span class="notif-feed-type">${cfg.label}</span>${time ? ' · ' + time : ''}</div>
+                        </div>
+                    </div>`;
+                }).join('');
+                return `<div class="notif-feed-group">
+                    <div class="notif-feed-group-title">${g}</div>
+                    ${items}
+                </div>`;
+            }).join('');
+        }
+        modal.classList.remove('hidden');
+    } catch (e) {
+        alert('Ошибка загрузки ленты уведомлений');
+    }
+}
+
+function notifClick(notifId, type, linkId) {
+    toggleNotifPanel();
+    if (notifId > 0) {
+        api(`/api/notifications/${notifId}/read`, 'POST').catch(() => {});
+    }
+    if (type === 'avito_message') {
+        openDetail(linkId);
+        api(`/api/avito/client/${linkId}/mark-read`, 'POST')
+            .then(() => pollNotifications())
+            .catch(() => {});
+    } else if (type === 'new_client') {
+        openDetail(linkId);
+    } else if (type === 'overdue_task') {
+        switchTab('tasks');
+    }
+    setTimeout(pollNotifications, 1000);
+}
+
+// Close notification panel on outside click
+document.addEventListener('click', function(e) {
+    const bell = document.getElementById('notifBell');
+    const panel = document.getElementById('notifPanel');
+    if (bell && panel && !bell.contains(e.target) && !panel.classList.contains('hidden')) {
+        panel.classList.add('hidden');
+    }
+});
+
+setInterval(pollNotifications, 15000);
+setTimeout(pollNotifications, 3000);
 
 if (localStorage.getItem('crm-notif') !== '0' && Notification.permission === 'default') {
     Notification.requestPermission();

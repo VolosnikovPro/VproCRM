@@ -81,6 +81,12 @@ def init_db():
         pass
     try:
         with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE clients ADD COLUMN stages_passed TEXT DEFAULT '[]'"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN impressions INTEGER DEFAULT NULL"))
             conn.commit()
     except Exception:
@@ -137,6 +143,51 @@ def init_db():
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_item_daily_stats ADD COLUMN date_from DATETIME DEFAULT NULL"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS avito_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name VARCHAR(200) NOT NULL,
+                    sort_order INTEGER DEFAULT 0
+                )
+            """))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE avito_items ADD COLUMN group_id INTEGER DEFAULT NULL REFERENCES avito_groups(id)"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type VARCHAR(50) NOT NULL,
+                    message TEXT NOT NULL,
+                    link_id INTEGER DEFAULT NULL,
+                    is_read BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN completed_at DATETIME DEFAULT NULL"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN result_text TEXT DEFAULT ''"))
             conn.commit()
     except Exception:
         pass

@@ -79,6 +79,8 @@ class TaskResponse(BaseModel):
     title: str
     due_date: Optional[datetime] = None
     completed: bool = False
+    completed_at: Optional[datetime] = None
+    result_text: str = ""
     created_at: datetime
 
     class Config:
@@ -94,6 +96,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     due_date: Optional[datetime] = None
     completed: Optional[bool] = None
+    result_text: Optional[str] = None
 
 
 class ActivityLogResponse(BaseModel):
@@ -254,6 +257,7 @@ class StageStat(BaseModel):
 
 class AvitoItemResponse(BaseModel):
     avito_item_id: Optional[int] = None
+    group_id: Optional[int] = None
     title: str
     address: str
     url: str
@@ -273,6 +277,35 @@ class AvitoItemResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AvitoGroupCreate(BaseModel):
+    name: str
+
+class AvitoGroupUpdate(BaseModel):
+    name: str
+
+class AvitoGroupResponse(BaseModel):
+    id: int
+    name: str
+    sort_order: int
+
+    class Config:
+        from_attributes = True
+
+class AvitoGroupStats(BaseModel):
+    id: int
+    name: str
+    item_count: int
+    impressions: Optional[float] = None
+    views: Optional[float] = None
+    contacts: Optional[float] = None
+    favorites: Optional[float] = None
+    spent: Optional[float] = None
+
+class MoveItemsRequest(BaseModel):
+    item_ids: List[int]
+    group_id: int
 
 
 class SyncItemsResult(BaseModel):
@@ -295,3 +328,16 @@ class RejectionReasonResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class NotificationItem(BaseModel):
+    id: int
+    type: str
+    message: str
+    link_id: Optional[int] = None
+    time: Optional[str] = None
+
+
+class NotificationsResponse(BaseModel):
+    total: int
+    items: List[NotificationItem] = []
