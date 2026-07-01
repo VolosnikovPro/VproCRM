@@ -30,10 +30,10 @@
 
 body.dark {
     --bg: #111111;
-    --surface: #262626;
+    --surface: #323232;
     --text: #ececec;
     --text-muted: #a8a8a8;
-    --border: #3a3a3a;
+    --border: #444444;
     --primary: #2dd4bf;
     --primary-hover: #5eead4;
     --primary-light: rgba(45, 212, 191, 0.12);
@@ -78,7 +78,7 @@ header {
     background: rgba(255,255,255,0.85);
 }
 body.dark header {
-    background: rgba(38,38,38,0.85);
+    background: rgba(50,50,50,0.85);
 }
 
 header h1 {
