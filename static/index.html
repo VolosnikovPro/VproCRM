@@ -233,7 +233,7 @@
     <div class="modal-overlay hidden" id="detailModal">
         <div class="modal modal-fullscreen">
             <div class="modal-header">
-                <h2 id="detailName" class="editable" data-field="deal_name" onclick="inlineEdit(this)"></h2>
+                <h2 id="detailName" class="editable" data-field="deal_name" ondblclick="inlineEdit(this)"></h2>
                 <div>
                     <button class="btn btn-sm btn-danger" onclick="deleteClient()">Удалить</button>
                     <button class="btn btn-sm" onclick="closeModal('detailModal')">✕</button>
@@ -243,17 +243,17 @@
                 <div class="detail-columns">
                     <div class="detail-left">
                         <div class="detail-grid">
-                            <div class="info-row"><strong>Название сделки:</strong> <span id="detailDealName" class="editable" data-field="deal_name" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Контакт:</strong> <span id="detailContactName" class="editable" data-field="name" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Телефон:</strong> <span id="detailPhone" class="editable" data-field="phone" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Email:</strong> <span id="detailEmail" class="editable" data-field="email" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Организация:</strong> <span id="detailOrg" class="editable" data-field="organization" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Адрес:</strong> <span id="detailAddress" class="editable" data-field="address" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Источник:</strong> <span id="detailSource" class="editable" data-field="source" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Название сделки:</strong> <span id="detailDealName" class="editable" data-field="deal_name" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Контакт:</strong> <span id="detailContactName" class="editable" data-field="name" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Телефон:</strong> <span id="detailPhone" class="editable" data-field="phone" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Email:</strong> <span id="detailEmail" class="editable" data-field="email" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Организация:</strong> <span id="detailOrg" class="editable" data-field="organization" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Адрес:</strong> <span id="detailAddress" class="editable" data-field="address" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Источник:</strong> <span id="detailSource" class="editable" data-field="source" ondblclick="inlineEdit(this)"></span></div>
                             <div id="avitoInfo" class="hidden"></div>
-                            <div class="info-row"><strong>Этап:</strong> <span id="detailStage" class="editable" data-field="stage_id" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Ответственный:</strong> <span id="detailResponsible" class="editable" data-field="responsible" onclick="inlineEdit(this)"></span></div>
-                            <div class="info-row"><strong>Бюджет:</strong> <span id="detailBudget" class="editable" data-field="budget" onclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Этап:</strong> <span id="detailStage" class="editable" data-field="stage_id" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Ответственный:</strong> <span id="detailResponsible" class="editable" data-field="responsible" ondblclick="inlineEdit(this)"></span></div>
+                            <div class="info-row"><strong>Бюджет:</strong> <span id="detailBudget" class="editable" data-field="budget" ondblclick="inlineEdit(this)"></span></div>
                         </div>
                         <div class="detail-tags" id="detailTags"></div>
 
@@ -366,6 +366,17 @@
                 <button class="btn btn-sm" onclick="closeModal('notifFeedModal');pollNotifications()">✕</button>
             </div>
             <div class="modal-body notif-feed" id="notifFeedList"></div>
+        </div>
+    </div>
+
+    <!-- Quick reply modal -->
+    <div class="modal-overlay hidden" id="quickReplyModal" onclick="if(event.target===this)closeModal('quickReplyModal')">
+        <div class="modal" style="max-width:480px">
+            <div class="modal-header">
+                <h2>Быстрый ответ</h2>
+                <button class="btn btn-sm" onclick="closeModal('quickReplyModal')">✕</button>
+            </div>
+            <div class="modal-body" id="quickReplyModalBody"></div>
         </div>
     </div>
 

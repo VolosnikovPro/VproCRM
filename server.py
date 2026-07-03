@@ -465,7 +465,12 @@ def update_client(client_id: int, data: ClientUpdate, db: Session = Depends(get_
         client.stages_passed = json.dumps(passed)
         db.commit()
         new_stage = db.query(PipelineStage).filter(PipelineStage.id == client.stage_id).first()
-        _log(client.id, "moved", f"Перемещён в этап «{new_stage.name}»", db)
+        if new_stage and new_stage.name == "Отказ" and client.rejection_reason_id:
+            reason = db.query(RejectionReason).filter(RejectionReason.id == client.rejection_reason_id).first()
+            reason_suffix = f" (причина: {reason.name})" if reason else ""
+            _log(client.id, "moved", f"Перемещён в этап «{new_stage.name}»{reason_suffix}", db)
+        else:
+            _log(client.id, "moved", f"Перемещён в этап «{new_stage.name}»", db)
         db.commit()
     return _enrich_client(client)
 
@@ -947,14 +952,15 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
             client_name = other_name or f"Клиент Авито ({chat_id[:8]})"
             first_stage = db.query(PipelineStage).order_by(PipelineStage.order).first()
             stage_id = first_stage.id if first_stage else 1
+            title = existing.item_title or ""
             existing_client = Client(
                 name=client_name,
                 phone="",
                 source="Авито",
                 stage_id=stage_id,
+                deal_name=title,
             )
             db.add(existing_client)
-            title = existing.item_title or ""
             if title:
                 existing_client.notes.append(Note(content=f"Объявление: {title}"))
             db.flush()
@@ -1019,8 +1025,8 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
                         except Exception:
                             pass
                     db.add(msg)
-                    # Create notification for new client message
-                    if not is_ours and existing.client_id and existing.client:
+                    # Create notification for new client message (only if unread)
+                    if not is_ours and existing.client_id and existing.client and not msg.is_read:
                         parts = [s for s in [existing.client.deal_name or "", existing.client.name or "Клиент"] if s]
                         notif_msg = f"Авито: {', '.join(parts)}"
                         txt = (m.content.text or "") if m.content else ""
@@ -1876,6 +1882,19 @@ def avito_client_chat(client_id: int, db: Session = Depends(get_db)):
     return {"chat_id": chat.chat_id, "item_title": chat.item_title, "item_url": chat.item_url, "item_image": chat.item_image, "address": address}
 
 
+# ---- Quick replies API ----
+@app.get("/api/quick-replies")
+def get_quick_replies():
+    cfg = _load_config()
+    return cfg.get("quick_replies", [])
+
+@app.put("/api/quick-replies")
+def save_quick_replies(data: dict = Body(...)):
+    cfg = _load_config()
+    cfg["quick_replies"] = data.get("replies", [])
+    _save_config(cfg)
+    return {"ok": True}
+
 # ---- Config API ----
 @app.put("/api/config")
 def update_config(data: dict = Body(...), db: Session = Depends(get_db)):
@@ -1975,11 +1994,136 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             link_id=link, time=c.last_message_at.isoformat()[:19] if c.last_message_at else None,
         ))
 
+    # 3. Overdue tasks — show as live items
+    today_start = datetime.combine(datetime.now().date(), datetime.min.time())
+    tomorrow_start = today_start + timedelta(days=1)
+    day_after_start = today_start + timedelta(days=2)
+    overdue_tasks = db.query(Task).filter(
+        Task.completed == False,
+        Task.due_date != None,
+        Task.due_date < today_start,
+        Task.client_id.isnot(None),
+    ).order_by(Task.due_date.asc()).all()
+    seen_overdue = set()
+    overdue_added = 0
+    for t in overdue_tasks:
+        if t.client_id in seen_overdue:
+            continue
+        seen_overdue.add(t.client_id)
+        client = db.query(Client).filter(Client.id == t.client_id).first()
+        if not client:
+            continue
+        deal_name = client.deal_name or client.name or "Клиент"
+        cnt = db.query(Task).filter(
+            Task.client_id == t.client_id,
+            Task.completed == False,
+            Task.due_date != None,
+            Task.due_date < today_start,
+        ).count()
+        msg = f"Просрочена задача: {deal_name}"
+        if cnt > 1:
+            msg += f" (+{cnt - 1})"
+        overdue_added += 1
+        items.append(NotificationItem(
+            id=0, type="overdue_task", message=msg,
+            link_id=t.client_id,
+            time=t.due_date.isoformat()[:19] if t.due_date else None,
+        ))
+
+    # 4. Tasks due today — show as live items
+    today_tasks = db.query(Task).filter(
+        Task.completed == False,
+        Task.due_date != None,
+        Task.due_date >= today_start,
+        Task.due_date < tomorrow_start,
+        Task.client_id.isnot(None),
+    ).order_by(Task.due_date.asc()).all()
+    seen_today = set()
+    today_added = 0
+    for t in today_tasks:
+        if t.client_id in seen_today:
+            continue
+        seen_today.add(t.client_id)
+        client = db.query(Client).filter(Client.id == t.client_id).first()
+        if not client:
+            continue
+        deal_name = client.deal_name or client.name or "Клиент"
+        cnt = db.query(Task).filter(
+            Task.client_id == t.client_id,
+            Task.completed == False,
+            Task.due_date != None,
+            Task.due_date >= today_start,
+            Task.due_date < tomorrow_start,
+        ).count()
+        msg = f"Задача на сегодня: {deal_name}"
+        if cnt > 1:
+            msg += f" (+{cnt - 1})"
+        today_added += 1
+        items.append(NotificationItem(
+            id=0, type="today_task", message=msg,
+            link_id=t.client_id,
+            time=t.due_date.isoformat()[:19] if t.due_date else None,
+        ))
+
+    # 5. Tasks due tomorrow — show as live items
+    tomorrow_tasks = db.query(Task).filter(
+        Task.completed == False,
+        Task.due_date != None,
+        Task.due_date >= tomorrow_start,
+        Task.due_date < day_after_start,
+        Task.client_id.isnot(None),
+    ).order_by(Task.due_date.asc()).all()
+    seen_tomorrow = set()
+    tomorrow_added = 0
+    for t in tomorrow_tasks:
+        if t.client_id in seen_tomorrow:
+            continue
+        seen_tomorrow.add(t.client_id)
+        client = db.query(Client).filter(Client.id == t.client_id).first()
+        if not client:
+            continue
+        deal_name = client.deal_name or client.name or "Клиент"
+        cnt = db.query(Task).filter(
+            Task.client_id == t.client_id,
+            Task.completed == False,
+            Task.due_date != None,
+            Task.due_date >= tomorrow_start,
+            Task.due_date < day_after_start,
+        ).count()
+        msg = f"Задача на завтра: {deal_name}"
+        if cnt > 1:
+            msg += f" (+{cnt - 1})"
+        tomorrow_added += 1
+        items.append(NotificationItem(
+            id=0, type="tomorrow_task", message=msg,
+            link_id=t.client_id,
+            time=t.due_date.isoformat()[:19] if t.due_date else None,
+        ))
+
+    # 6. Deals with no tasks — show as live items
+    no_task_clients = db.query(Client).filter(
+        ~Client.tasks.any(),
+        Client.deal_name != None,
+        Client.deal_name != "",
+    ).order_by(Client.deal_name).all()
+    no_task_added = 0
+    for client in no_task_clients:
+        if no_task_added >= 5:
+            break
+        msg = f"Нет задач: {client.deal_name or client.name}"
+        no_task_added += 1
+        items.append(NotificationItem(
+            id=0, type="no_task", message=msg,
+            link_id=client.id,
+            time=None,
+        ))
+
     total = sum(c.unread_count for c in chats)
     total += db.query(Notification).filter(
         Notification.is_read == False,
         Notification.type != "avito_message",
     ).count()
+    total += overdue_added + today_added + tomorrow_added + no_task_added
     return NotificationsResponse(total=total, items=items)
 
 

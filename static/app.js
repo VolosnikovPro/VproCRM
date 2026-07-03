@@ -139,7 +139,10 @@ function createClientCard(client) {
         ${budgetHtml}
         ${tagsHtml}
         <div class="card-footer">
-            <span class="source">${esc(client.source || 'Без источника')}</span>
+            <div>
+                <span class="source">${esc(client.source || 'Без источника')}</span>
+                ${client.created_at ? `<span style="font-size:10px;color:var(--text-muted);margin-left:6px">${fmtDateShort(client.created_at)}</span>` : ''}
+            </div>
             <div style="display:flex;align-items:center;gap:4px">
                 ${lastAct}
                 <span style="font-size:11px;color:var(--text-muted)">${client.notes?.length || 0} зап.</span>
@@ -248,6 +251,15 @@ function closeStageDropdown() {
     document.getElementById('stageDropdown').classList.add('hidden');
 }
 
+// Single global handler to close stage dropdown on outside click
+document.addEventListener('click', function _stageDropdownOutsideClick(e) {
+    const dd = document.getElementById('stageDropdown');
+    if (dd.classList.contains('hidden')) return;
+    const el = document.querySelector('.detail-left .editable[data-field="stage_id"]');
+    if (dd.contains(e.target) || e.target === el) return;
+    dd.classList.add('hidden');
+});
+
 async function moveClientToStage(clientId, stageId) {
     const stage = stages.find(s => s.id === stageId);
     try {
@@ -289,10 +301,25 @@ async function confirmRejection() {
         return;
     }
     errEl.style.display = 'none';
+    const stageId = _rejectTargetStageId;
+    const clientId = _rejectClientId;
     closeModal('rejectionModal');
     try {
-        await api(`/api/clients/${_rejectClientId}`, 'PUT', { stage_id: _rejectTargetStageId, rejection_reason_id: reasonId });
+        await api(`/api/clients/${clientId}`, 'PUT', { stage_id: stageId, rejection_reason_id: reasonId });
         await loadData();
+        const dm = document.getElementById('detailModal');
+        if (!dm.classList.contains('hidden') && currentClientId === clientId) {
+            const stage = stages.find(s => s.id === stageId);
+            document.getElementById('detailStage').textContent = stage ? stage.name : '—';
+            const fresh = await api(`/api/clients/${clientId}`);
+            let atts = [], aChat = null, aMsgs = [];
+            try { atts = await api(`/api/clients/${clientId}/attachments`); } catch {}
+            try { aChat = await api(`/api/avito/client/${clientId}/chat`); } catch {}
+            if (aChat) {
+                try { aMsgs = await api(`/api/avito/client/${clientId}/messages`); } catch {}
+            }
+            renderTimeline(fresh, atts, aChat, aMsgs);
+        }
     } catch (e) {
         alert('Ошибка: ' + e.message);
     }
@@ -655,6 +682,10 @@ async function openDetail(clientId) {
     document.getElementById('noteFileName').textContent = '';
     document.getElementById('noteFile').value = '';
     document.getElementById('detailModal').classList.remove('hidden');
+    requestAnimationFrame(() => {
+        const tl = document.getElementById('timeline');
+        if (tl) tl.scrollTop = tl.scrollHeight;
+    });
 }
 
 function iconNote() { return '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 2h14v10H5l-3 3V2z"/></svg>'; }
@@ -810,8 +841,11 @@ function renderTimeline(client, attachments, avitoChat, avitoMsgs) {
                 </div>
                 <div class="tl-body">
                     <div class="avito-tl-reply">
-                        <input type="text" class="avito-reply-input" placeholder="Написать сообщение..." data-chat-id="${esc(avitoChat.chat_id)}">
-                        <button class="btn btn-sm btn-primary" onclick="sendAvitoReply(this)">Отправить</button>
+                        <textarea class="avito-reply-input" placeholder="Написать сообщение..." data-chat-id="${esc(avitoChat.chat_id)}" rows="3"></textarea>
+                        <div class="avito-reply-btns">
+                            <button class="btn btn-sm btn-primary" onclick="sendAvitoReply(this)">Отправить</button>
+                            <button class="btn btn-sm" onclick="toggleQuickReplyModal()">Быстрый ответ</button>
+                        </div>
                     </div>
                 </div>
             `,
@@ -1243,33 +1277,40 @@ function inlineEdit(el) {
     if (field === 'name') currentValue = document.getElementById('detailContactName').textContent;
 
     if (field === 'stage_id') {
-        const sel = document.createElement('select');
-        stages.forEach(s => {
-            const opt = document.createElement('option');
-            opt.value = s.id; opt.textContent = s.name;
-            if (s.name === el.textContent || s.id === currentClientData?.stage_id) opt.selected = true;
-            sel.appendChild(opt);
-        });
-        el.innerHTML = '';
-        el.appendChild(sel);
-        sel.focus();
-        const doSave = async () => {
-            const val = Number(sel.value);
+        closeStageDropdown();
+        const rect = el.getBoundingClientRect();
+        const dd = document.getElementById('stageDropdown');
+        dd.innerHTML = stages.map(s => `
+            <div class="stage-dropdown-item" data-stage-id="${s.id}" data-is-reject="${s.name === 'Отказ'}" style="${s.name === 'Отказ' ? 'border-top:1px solid var(--border);margin-top:4px;padding-top:10px' : ''}">
+                <span class="sd-dot" style="background:${s.color}"></span>
+                ${esc(s.name)}
+            </div>
+        `).join('');
+        dd.style.left = rect.left + 'px';
+        dd.style.top = (rect.bottom + 4) + 'px';
+        dd.classList.remove('hidden');
+        const stageName = el.textContent;
+        dd.onclick = async (e) => {
+            const item = e.target.closest('.stage-dropdown-item');
+            if (!item) return;
+            closeStageDropdown();
+            dd.onclick = null;
+            const val = Number(item.dataset.stageId);
             const stage = stages.find(s => s.id === val);
-            if (stage && stage.name === 'Отказ') {
-                el.innerHTML = stageName; // revert
+            if (item.dataset.isReject === 'true') {
+                el.textContent = stageName;
                 showRejectionModal(id, val);
                 return;
             }
-            el.innerHTML = stage ? stage.name : '—';
-            await api(`/api/clients/${id}`, 'PUT', { stage_id: val });
-            await loadData();
-            openDetail(id);
+            el.textContent = stage ? stage.name : '—';
+            try {
+                await api(`/api/clients/${id}`, 'PUT', { stage_id: val });
+                await loadData();
+                openDetail(id);
+            } catch (e) {
+                alert('Ошибка перемещения: ' + e.message);
+            }
         };
-        sel.addEventListener('change', doSave);
-        sel.addEventListener('blur', doSave);
-        sel.addEventListener('keydown', e => { if (e.key === 'Escape') { el.innerHTML = stageName; } });
-        const stageName = el.textContent;
         return;
     }
 
@@ -1323,7 +1364,7 @@ function inlineEdit(el) {
     inp.type = 'text';
     inp.value = currentValue;
     if (field === 'deal_name') inp.style.fontSize = '20px'; else if (field === 'name') inp.style.fontSize = '16px'; else inp.style.fontSize = '14px';
-    inp.style.width = field === 'deal_name' || field === 'name' ? '300px' : '200px';
+    inp.style.width = '100%';
     el.innerHTML = '';
     el.appendChild(inp);
     inp.focus(); inp.select();
@@ -2178,6 +2219,7 @@ async function sendAvitoReply(btn) {
     try {
         await api(`/api/avito/chats/${chatId}/messages`, 'POST', { content });
         input.value = '';
+        input.style.height = 'auto';
         if (currentClientId) {
             try { await api(`/api/avito/client/${currentClientId}/sync-messages`, 'POST'); } catch {}
             const msgs = await api(`/api/avito/client/${currentClientId}/messages`);
@@ -2191,6 +2233,139 @@ async function sendAvitoReply(btn) {
     } finally {
         btn.disabled = false;
     }
+}
+
+/* Quick reply templates */
+const DEFAULT_REPLIES = [
+    'Здравствуйте! Товар ещё доступен. Можете приехать посмотреть.',
+    'Здравствуйте! К сожалению, товар уже продан.',
+    'Да, конечно, приезжайте. Адрес: [укажите адрес]',
+    'Отправлю дополнительные фото позже.',
+    'Свяжитесь со мной по телефону для уточнения деталей.',
+    'Можем встретиться сегодня после 18:00.',
+    'Договорились! Буду ждать.',
+];
+
+let _quickRepliesCache = null;
+
+async function getQuickReplies() {
+    if (_quickRepliesCache) return _quickRepliesCache;
+    try {
+        const data = await api('/api/quick-replies');
+        if (data && data.length > 0) {
+            _quickRepliesCache = data;
+            return data;
+        }
+    } catch {}
+    try {
+        const saved = localStorage.getItem('quickReplies');
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            _quickRepliesCache = parsed;
+            return parsed;
+        }
+    } catch {}
+    return [...DEFAULT_REPLIES];
+}
+
+async function saveQuickReplies(replies) {
+    _quickRepliesCache = replies;
+    try {
+        await api('/api/quick-replies', 'PUT', { replies });
+    } catch {}
+    try {
+        localStorage.setItem('quickReplies', JSON.stringify(replies));
+    } catch {}
+}
+
+async function toggleQuickReplyModal() {
+    const modal = document.getElementById('quickReplyModal');
+    const body = document.getElementById('quickReplyModalBody');
+    await renderQuickReplyPanel(body);
+    modal.classList.remove('hidden');
+}
+
+async function renderQuickReplyPanel(container) {
+    const replies = await getQuickReplies();
+    container.innerHTML = `
+        <div class="quick-reply-items">
+            ${replies.map((tpl, i) =>
+                `<div class="quick-reply-row" data-idx="${i}">
+                    <div class="quick-reply-row-text" onclick="quickReplySelect(${i})">${esc(tpl.length > 150 ? tpl.slice(0, 150) + '…' : tpl)}</div>
+                    <div class="quick-reply-row-actions">
+                        <button class="quick-reply-row-btn" onclick="quickReplyEdit(${i})" title="Изменить">✎</button>
+                        <button class="quick-reply-row-btn quick-reply-row-del" onclick="quickReplyDelete(${i})" title="Удалить">✕</button>
+                    </div>
+                </div>`
+            ).join('')}
+        </div>
+        <div class="quick-reply-add">
+            <textarea class="quick-reply-add-input" rows="2" placeholder="Новый шаблон..."></textarea>
+            <button class="btn btn-sm btn-primary" onclick="quickReplyAdd(this)">Добавить</button>
+        </div>
+    `;
+}
+
+async function quickReplySelect(idx) {
+    const replies = await getQuickReplies();
+    const input = document.querySelector('.avito-reply-input');
+    if (input && replies[idx]) {
+        input.value = replies[idx];
+        input.style.height = 'auto';
+        input.style.height = input.scrollHeight + 'px';
+    }
+    closeModal('quickReplyModal');
+}
+
+async function quickReplyEdit(idx) {
+    const replies = await getQuickReplies();
+    const row = document.querySelector(`.quick-reply-row[data-idx="${idx}"]`);
+    if (!row) return;
+    const textDiv = row.querySelector('.quick-reply-row-text');
+    textDiv.innerHTML = `<textarea class="quick-reply-edit-area" rows="2">${esc(replies[idx])}</textarea>
+        <div style="display:flex;gap:4px;margin-top:4px;">
+            <button class="btn btn-sm btn-primary" onclick="quickReplySaveEdit(${idx})">Сохранить</button>
+            <button class="btn btn-sm" onclick="quickReplyCancelEdit(${idx})">Отмена</button>
+        </div>`;
+}
+
+async function quickReplySaveEdit(idx) {
+    const row = document.querySelector(`.quick-reply-row[data-idx="${idx}"]`);
+    if (!row) return;
+    const textarea = row.querySelector('.quick-reply-edit-area');
+    const val = textarea.value.trim();
+    if (!val) return;
+    const replies = await getQuickReplies();
+    replies[idx] = val;
+    await saveQuickReplies(replies);
+    const container = document.getElementById('quickReplyModalBody');
+    await renderQuickReplyPanel(container);
+}
+
+async function quickReplyCancelEdit(idx) {
+    const container = document.getElementById('quickReplyModalBody');
+    await renderQuickReplyPanel(container);
+}
+
+async function quickReplyDelete(idx) {
+    let replies = await getQuickReplies();
+    replies.splice(idx, 1);
+    await saveQuickReplies(replies);
+    const container = document.getElementById('quickReplyModalBody');
+    await renderQuickReplyPanel(container);
+}
+
+async function quickReplyAdd(btn) {
+    const addDiv = btn.closest('.quick-reply-add');
+    const input = addDiv.querySelector('.quick-reply-add-input');
+    const val = input.value.trim();
+    if (!val) return;
+    const replies = await getQuickReplies();
+    replies.push(val);
+    await saveQuickReplies(replies);
+    input.value = '';
+    const container = document.getElementById('quickReplyModalBody');
+    await renderQuickReplyPanel(container);
 }
 
 /* Avito settings modal helpers */
@@ -2239,7 +2414,7 @@ function renderNotifPanel() {
     const panel = document.getElementById('notifPanel');
     if (!panel) return;
     const data = window._lastNotifData || { items: [] };
-    const colors = { avito_message: '#6b47dc', overdue_task: 'var(--danger)', new_client: 'var(--success)' };
+    const colors = { avito_message: '#6b47dc', overdue_task: 'var(--danger)', new_client: 'var(--success)', today_task: '#e65100', tomorrow_task: '#1565c0', no_task: 'var(--text-muted)' };
     let html = '<div class="notif-feed-link" onclick="openNotifFeed()">📋 Все уведомления</div>';
     html += '<div class="notif-panel-scroll">';
     if (!data.items.length) {
@@ -2265,8 +2440,13 @@ function renderNotifPanel() {
 async function markAllNotifRead() {
     try {
         await api('/api/notifications/read-all', 'POST');
-        pollNotifications();
-    } catch (e) { /* ignore */ }
+        // Suppress task-reminder live items so badge goes to 0
+        if (window._lastNotifData) {
+            window._lastNotifData.items = window._lastNotifData.items.filter(n => n.id > 0);
+            window._lastNotifData.total = window._lastNotifData.items.length;
+        }
+        await pollNotifications();
+    } catch (e) { console.error('markAllNotifRead error:', e); }
 }
 
 function toggleNotifPanel() {
@@ -2348,6 +2528,10 @@ function notifClick(notifId, type, linkId) {
         openDetail(linkId);
     } else if (type === 'overdue_task') {
         switchTab('tasks');
+    } else if (type === 'today_task' || type === 'tomorrow_task') {
+        switchTab('tasks');
+    } else if (type === 'no_task') {
+        openDetail(linkId);
     }
     setTimeout(pollNotifications, 1000);
 }
