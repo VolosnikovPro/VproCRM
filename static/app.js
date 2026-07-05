@@ -386,6 +386,7 @@ async function deleteRejectionReason(id) {
 let searchTimer;
 function onSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 300); }
 async function doSearch() {
+    document.getElementById('noTasksFilterBadge').classList.add('hidden');
     const q = document.getElementById('searchInput').value.trim();
     const stageId = document.getElementById('filterStage').value;
     const source = document.getElementById('filterSource').value;
@@ -2522,7 +2523,7 @@ async function openNotifFeed() {
     }
 }
 
-function notifClick(notifId, type, linkId) {
+async function notifClick(notifId, type, linkId) {
     toggleNotifPanel();
     if (notifId > 0) {
         api(`/api/notifications/${notifId}/read`, 'POST').catch(() => {});
@@ -2539,9 +2540,21 @@ function notifClick(notifId, type, linkId) {
     } else if (type === 'today_task' || type === 'tomorrow_task') {
         switchTab('tasks');
     } else if (type === 'no_task') {
-        openDetail(linkId);
+        document.getElementById('filterStage').value = '';
+        document.getElementById('filterSource').value = '';
+        document.getElementById('filterTag').value = '';
+        document.getElementById('searchInput').value = '';
+        document.getElementById('noTasksFilterBadge').classList.remove('hidden');
+        switchTab('dashboard');
+        await loadData();
+        clients = clients.filter(c => !(c.tasks || []).length);
+        renderPipeline();
     }
     setTimeout(pollNotifications, 1000);
+}
+function clearNoTasksFilter() {
+    document.getElementById('noTasksFilterBadge').classList.add('hidden');
+    doSearch();
 }
 
 // Close notification panel on outside click

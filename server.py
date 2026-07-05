@@ -316,6 +316,7 @@ def get_clients(
     source: str | None = None,
     tag_id: int | None = None,
     query: str | None = None,
+    no_tasks: bool = False,
     db: Session = Depends(get_db),
 ):
     q = db.query(Client)
@@ -325,6 +326,8 @@ def get_clients(
         q = q.filter(Client.source == source)
     if tag_id is not None:
         q = q.filter(Client.tags.any(Tag.id == tag_id))
+    if no_tasks:
+        q = q.filter(~Client.tasks.any())
     if query:
         like = f"%{query}%"
         q = q.filter(
@@ -2107,22 +2110,20 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             time=t.due_date.isoformat()[:19] if t.due_date else None,
         ))
 
-    # 6. Deals with no tasks — show as live items
-    no_task_clients = db.query(Client).filter(
+    # 6. Deals with no tasks — single aggregated item
+    no_task_count = db.query(Client).filter(
         ~Client.tasks.any(),
         Client.deal_name != None,
         Client.deal_name != "",
         Client.stage_id != reject_stage_id,
-    ).order_by(Client.deal_name).all()
+    ).count()
     no_task_added = 0
-    for client in no_task_clients:
-        if no_task_added >= 5:
-            break
-        msg = f"Нет задач: {client.deal_name or client.name}"
-        no_task_added += 1
+    if no_task_count > 0:
+        msg = f"Нет задач ({no_task_count})"
+        no_task_added = 1
         items.append(NotificationItem(
             id=0, type="no_task", message=msg,
-            link_id=client.id,
+            link_id=0,
             time=None,
         ))
 
