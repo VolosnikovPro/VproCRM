@@ -1025,17 +1025,20 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
                         except Exception:
                             pass
                     db.add(msg)
-                    # Create notification for new client message (only if unread)
+                    # Create notification for new client message (only if unread, skip rejected)
                     if not is_ours and existing.client_id and existing.client and not msg.is_read:
-                        parts = [s for s in [existing.client.deal_name or "", existing.client.name or "Клиент"] if s]
-                        notif_msg = f"Авито: {', '.join(parts)}"
-                        txt = (m.content.text or "") if m.content else ""
-                        if txt:
-                            txt = txt[:100]
-                            if len((m.content.text or "") if m.content else "") > 100:
-                                txt += "..."
-                            notif_msg += f" — {txt}"
-                        _create_notification(db, "avito_message", notif_msg, existing.client_id)
+                        if existing.client.stage and existing.client.stage.name == "Отказ":
+                            pass
+                        else:
+                            parts = [s for s in [existing.client.deal_name or "", existing.client.name or "Клиент"] if s]
+                            notif_msg = f"Авито: {', '.join(parts)}"
+                            txt = (m.content.text or "") if m.content else ""
+                            if txt:
+                                txt = txt[:100]
+                                if len((m.content.text or "") if m.content else "") > 100:
+                                    txt += "..."
+                                notif_msg += f" — {txt}"
+                            _create_notification(db, "avito_message", notif_msg, existing.client_id)
                 # Recompute unread count from local messages
                 if existing.client_id:
                     unread = db.query(AvitoMessage).filter(
@@ -1947,6 +1950,8 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
         return NotificationsResponse(total=len(items), items=items)
 
     # Bell: merge notification table + live Avito unread
+    reject_stage = db.query(PipelineStage).filter(PipelineStage.name == "Отказ").first()
+    reject_stage_id = reject_stage.id if reject_stage else -1
     notif_ids_seen = set()
     # 1. Unread from notifications table
     unread_notifs = db.query(Notification).filter(Notification.is_read == False).order_by(Notification.created_at.desc()).all()
@@ -1956,6 +1961,8 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             if not client:
                 n.is_read = True
                 db.commit()
+                continue
+            if client.stage_id == reject_stage_id:
                 continue
         notif_ids_seen.add((n.type, n.link_id))
         items.append(NotificationItem(
@@ -1970,7 +1977,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
     ).order_by(AvitoChat.last_message_at.desc()).all()
     for c in chats:
         link = c.client_id
-        if ('avito_message', link) in notif_ids_seen or not c.client:
+        if ('avito_message', link) in notif_ids_seen or not c.client or c.client.stage_id == reject_stage_id:
             continue
         deal_name = c.client.deal_name or ""
         client_name = c.client.name or "Клиент"
@@ -2011,7 +2018,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             continue
         seen_overdue.add(t.client_id)
         client = db.query(Client).filter(Client.id == t.client_id).first()
-        if not client:
+        if not client or client.stage_id == reject_stage_id:
             continue
         deal_name = client.deal_name or client.name or "Клиент"
         cnt = db.query(Task).filter(
@@ -2045,7 +2052,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             continue
         seen_today.add(t.client_id)
         client = db.query(Client).filter(Client.id == t.client_id).first()
-        if not client:
+        if not client or client.stage_id == reject_stage_id:
             continue
         deal_name = client.deal_name or client.name or "Клиент"
         cnt = db.query(Task).filter(
@@ -2080,7 +2087,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
             continue
         seen_tomorrow.add(t.client_id)
         client = db.query(Client).filter(Client.id == t.client_id).first()
-        if not client:
+        if not client or client.stage_id == reject_stage_id:
             continue
         deal_name = client.deal_name or client.name or "Клиент"
         cnt = db.query(Task).filter(
@@ -2105,6 +2112,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
         ~Client.tasks.any(),
         Client.deal_name != None,
         Client.deal_name != "",
+        Client.stage_id != reject_stage_id,
     ).order_by(Client.deal_name).all()
     no_task_added = 0
     for client in no_task_clients:
