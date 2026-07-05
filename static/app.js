@@ -385,7 +385,6 @@ async function deleteRejectionReason(id) {
 let searchTimer;
 function onSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 300); }
 async function doSearch() {
-    document.getElementById('noTasksFilterBadge').classList.add('hidden');
     const q = document.getElementById('searchInput').value.trim();
     const stageId = document.getElementById('filterStage').value;
     const source = document.getElementById('filterSource').value;
@@ -2553,17 +2552,11 @@ async function notifClick(notifId, type, linkId) {
         document.getElementById('filterSource').value = '';
         document.getElementById('filterTag').value = '';
         document.getElementById('searchInput').value = '';
-        document.getElementById('noTasksFilterBadge').classList.remove('hidden');
+        document.getElementById('filterTask').value = 'none';
         switchTab('dashboard');
-        await loadData();
-        clients = clients.filter(c => !(c.tasks || []).length);
-        renderPipeline();
+        doSearch();
     }
     setTimeout(pollNotifications, 1000);
-}
-function clearNoTasksFilter() {
-    document.getElementById('noTasksFilterBadge').classList.add('hidden');
-    doSearch();
 }
 
 // Close notification panel on outside click
