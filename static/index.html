@@ -43,6 +43,13 @@
                     <select id="filterTag" onchange="onSearch()"><option value="">Все теги</option></select>
                     <button class="btn-filter-settings" onclick="openTagModal()" title="Настроить теги">✎</button>
                 </div>
+                <select id="filterTask" onchange="onSearch()">
+                    <option value="">Все задачи</option>
+                    <option value="none">Нет задач</option>
+                    <option value="overdue">Просроченные</option>
+                    <option value="today">Сегодня</option>
+                    <option value="week">На этой неделе</option>
+                </select>
                 <span id="noTasksFilterBadge" class="hidden" style="font-size:12px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer" onclick="clearNoTasksFilter()">Без задач ✕</span>
                 <button class="btn btn-primary" onclick="openClientModal()">+ Клиент</button>
                 <button class="btn" onclick="exportCSV()">CSV</button>

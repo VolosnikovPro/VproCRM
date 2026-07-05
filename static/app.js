@@ -145,7 +145,6 @@ function createClientCard(client) {
             </div>
             <div style="display:flex;align-items:center;gap:4px">
                 ${lastAct}
-                <span style="font-size:11px;color:var(--text-muted)">${client.notes?.length || 0} зап.</span>
                 <button class="stage-btn" data-client-id="${client.id}" onclick="event.stopPropagation(); showStageDropdown(event, ${client.id})">▼</button>
             </div>
         </div>
@@ -391,6 +390,7 @@ async function doSearch() {
     const stageId = document.getElementById('filterStage').value;
     const source = document.getElementById('filterSource').value;
     const tagId = document.getElementById('filterTag').value;
+    const taskFilter = document.getElementById('filterTask').value;
     const params = new URLSearchParams();
     if (q) params.set('query', q);
     if (stageId) params.set('stage_id', stageId);
@@ -398,6 +398,15 @@ async function doSearch() {
     if (tagId) params.set('tag_id', tagId);
     const qs = params.toString();
     clients = await api('/api/clients' + (qs ? '?' + qs : ''));
+    if (taskFilter === 'none') {
+        clients = clients.filter(c => !(c.tasks || []).length);
+    } else if (taskFilter === 'overdue') {
+        clients = clients.filter(c => c.overdue_count > 0);
+    } else if (taskFilter === 'today') {
+        clients = clients.filter(c => c.today_count > 0);
+    } else if (taskFilter === 'week') {
+        clients = clients.filter(c => c.week_count > 0);
+    }
     renderPipeline();
 }
 
