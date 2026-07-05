@@ -2445,7 +2445,15 @@ async function markAllNotifRead() {
             window._lastNotifData.items = window._lastNotifData.items.filter(n => n.id > 0);
             window._lastNotifData.total = window._lastNotifData.items.length;
         }
-        await pollNotifications();
+        // Update badge from filtered data (live items would reappear on re-fetch)
+        const badge = document.getElementById('notifBadge');
+        if (badge) {
+            const t = window._lastNotifData?.total || 0;
+            if (t > 0) { badge.textContent = t > 99 ? '99+' : t; badge.classList.remove('hidden'); }
+            else { badge.classList.add('hidden'); }
+        }
+        const panel = document.getElementById('notifPanel');
+        if (panel && !panel.classList.contains('hidden')) renderNotifPanel();
     } catch (e) { console.error('markAllNotifRead error:', e); }
 }
 
