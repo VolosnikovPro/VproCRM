@@ -35,92 +35,92 @@ def init_db():
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_tokens ADD COLUMN company_id VARCHAR(100) DEFAULT ''"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_chats ADD COLUMN avito_item_id INTEGER DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE clients ADD COLUMN deal_name VARCHAR(500) DEFAULT ''"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_tokens ADD COLUMN avito_client_id VARCHAR(500) DEFAULT ''"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_tokens ADD COLUMN avito_client_secret VARCHAR(500) DEFAULT ''"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_messages ADD COLUMN is_read BOOLEAN DEFAULT 0"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_messages ADD COLUMN read_at DATETIME DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE clients ADD COLUMN rejection_reason_id INTEGER DEFAULT NULL REFERENCES rejection_reasons(id)"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE clients ADD COLUMN stages_passed TEXT DEFAULT '[]'"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN impressions INTEGER DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN views INTEGER DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN contacts INTEGER DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN favorites INTEGER DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN spent FLOAT DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN stats_updated_at DATETIME DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -138,14 +138,14 @@ def init_db():
                 )
             """))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_item_daily_stats ADD COLUMN date_from DATETIME DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -156,14 +156,14 @@ def init_db():
                 )
             """))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE avito_items ADD COLUMN group_id INTEGER DEFAULT NULL REFERENCES avito_groups(id)"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -177,17 +177,43 @@ def init_db():
                 )
             """))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN completed_at DATETIME DEFAULT NULL"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN result_text TEXT DEFAULT ''"))
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Migration warning: {e}")
+    # Add is_active column to avito_items if missing
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE avito_items ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+            conn.commit()
+    except Exception as e:
+        print(f"Migration warning: {e}")
+    # Backfill Avito client created_at from earliest message timestamp (run once)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                UPDATE clients SET created_at = (
+                    SELECT MIN(am.created_at) FROM avito_messages am
+                    JOIN avito_chats ac ON ac.chat_id = am.chat_id
+                    WHERE ac.client_id = clients.id
+                )
+                WHERE source = 'Авито'
+                AND EXISTS (
+                    SELECT 1 FROM avito_messages am2
+                    JOIN avito_chats ac2 ON ac2.chat_id = am2.chat_id
+                    WHERE ac2.client_id = clients.id
+                )
+            """))
+            conn.commit()
+    except Exception as e:
+        print(f"Migration warning: {e}")

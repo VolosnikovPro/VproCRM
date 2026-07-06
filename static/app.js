@@ -5,6 +5,8 @@ let clients = [];
 let currentClientId = null;
 let contextClientId = null;
 let currentClientData = null;
+let _pollNotifInterval = null;
+let _checkTasksInterval = null;
 
 async function api(path, method = 'GET', body = null) {
     const opts = { method, headers: {} };
@@ -21,7 +23,7 @@ async function api(path, method = 'GET', body = null) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmtDate(d) { return new Date(d).toLocaleString('ru-RU'); }
-function fmtDateShort(d) { if (!d) return ''; const dt = new Date(d); return dt.toLocaleDateString('ru-RU'); }
+function fmtDateShort(d) { if (!d) return '—'; const dt = new Date(d); return dt.toLocaleDateString('ru-RU'); }
 function fmtMoney(v) { return Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'; }
 function declOfNum(n, words) { return words[(n % 10 === 1 && n % 100 !== 11) ? 0 : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) ? 1 : 2]; }
 
@@ -67,11 +69,20 @@ function populateSelects() {
 function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
 
 /* Pipeline */
+function isFilterActive() {
+    return !!document.getElementById('searchInput').value.trim()
+        || !!document.getElementById('filterStage').value
+        || !!document.getElementById('filterSource').value
+        || !!document.getElementById('filterTag').value
+        || !!document.getElementById('filterTask').value;
+}
 function renderPipeline() {
     const el = document.getElementById('pipeline');
     el.innerHTML = '';
+    const filterOn = isFilterActive();
     stages.forEach(stage => {
         const sc = clients.filter(c => c.stage_id === stage.id);
+        if (filterOn && sc.length === 0) return;
         const col = document.createElement('div');
         col.className = 'kanban-column';
         col.innerHTML = `
@@ -83,7 +94,7 @@ function renderPipeline() {
                 </div>
                 <div class="column-header-stats">
                     <span class="stage-count">${sc.length} ${declOfNum(sc.length, ['сделка','сделки','сделок'])}</span>
-                    ${stage.total_budget > 0 ? `<span class="stage-budget">${fmtMoney(stage.total_budget)}</span>` : ''}
+                    ${sc.length > 0 && stage.total_budget > 0 ? `<span class="stage-budget">${fmtMoney(stage.total_budget)}</span>` : ''}
                 </div>
             </div>
             <div class="column-body" data-stage-id="${stage.id}">
@@ -112,6 +123,8 @@ function createClientCard(client) {
         indicator = `<span class="task-indicator task-overdue" title="${client.overdue_count} просроченных">${client.overdue_count}</span>`;
     } else if (client.today_count > 0) {
         indicator = `<span class="task-indicator task-today" title="${client.today_count} на сегодня">${client.today_count}</span>`;
+    } else if (client.tomorrow_count > 0) {
+        indicator = `<span class="task-indicator task-today" title="${client.tomorrow_count} на завтра">${client.tomorrow_count}</span>`;
     } else if (client.week_count > 0) {
         indicator = `<span class="task-indicator task-week" title="${client.week_count} на неделе">${client.week_count}</span>`;
     } else if (client.later_count > 0) {
@@ -338,7 +351,7 @@ async function renderRejectionReasons() {
         list.innerHTML = reasons.map(r => `
             <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
                 <span style="flex:1;font-size:14px">${esc(r.name)}</span>
-                <button class="btn btn-sm" onclick="editRejectionReason(${r.id}, '${esc(r.name)}')" style="font-size:12px">✎</button>
+                <button class="btn btn-sm" onclick="editRejectionReason(${r.id}, '${esc(encodeURIComponent(r.name))}')" style="font-size:12px">✎</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteRejectionReason(${r.id})" style="font-size:12px">✕</button>
             </div>
         `).join('');
@@ -361,6 +374,7 @@ async function addRejectionReason() {
 }
 
 async function editRejectionReason(id, currentName) {
+    currentName = decodeURIComponent(currentName);
     const newName = prompt('Новое название:', currentName);
     if (!newName || newName === currentName) return;
     try {
@@ -403,6 +417,8 @@ async function doSearch() {
         clients = clients.filter(c => c.overdue_count > 0);
     } else if (taskFilter === 'today') {
         clients = clients.filter(c => c.today_count > 0);
+    } else if (taskFilter === 'tomorrow') {
+        clients = clients.filter(c => c.tomorrow_count > 0);
     } else if (taskFilter === 'week') {
         clients = clients.filter(c => c.week_count > 0);
     }
@@ -1216,11 +1232,18 @@ if (localStorage.getItem('crm-dark')) {
 updateThemeIcon();
 
 /* Notifications */
+let permissionRequested = false;
+document.addEventListener('click', function requestPerm() {
+    if (!permissionRequested && Notification.permission === 'default') {
+        Notification.requestPermission();
+        permissionRequested = true;
+    }
+}, { once: true });
+
 function toggleNotifications() {
     const on = document.getElementById('settingsNotifications').checked;
     localStorage.setItem('crm-notif', on ? '1' : '0');
     if (on) {
-        if (Notification.permission === 'default') Notification.requestPermission();
         checkTasks();
     }
 }
@@ -1229,7 +1252,6 @@ let notifiedTasks = new Set(JSON.parse(localStorage.getItem('crm-notified') || '
 
 async function checkTasks() {
     if (localStorage.getItem('crm-notif') === '0') return;
-    if (Notification.permission === 'default') Notification.requestPermission();
     if (Notification.permission !== 'granted') return;
     try {
         const data = await api('/api/tasks');
@@ -1441,6 +1463,7 @@ let adsLoading = false;
 let adsData = [];
 let adsSortCol = null;
 let adsSortDir = 1;
+let showStages = true;
 
 async function refreshAds() {
     if (adsLoading) return;
@@ -1457,6 +1480,27 @@ async function refreshAds() {
         if (tbody) tbody.innerHTML = `<tr><td colspan="13" class="ads-empty">Ошибка загрузки: ${esc(e.message)}</td></tr>`;
     } finally {
         adsLoading = false;
+    }
+}
+
+async function restoreItem(itemId) {
+    if (!confirm('Проверить статус объявления на Avito и восстановить?')) return;
+    try {
+        const r = await api('/api/avito/items/' + itemId + '/restore', 'POST');
+        if (r.active) {
+            await refreshAds();
+        } else {
+            const msg = r.message || 'Не удалось восстановить';
+            if (r.url) {
+                if (confirm(msg + '\n\nОткрыть страницу объявления на Avito?')) {
+                    window.open(r.url, '_blank');
+                }
+            } else {
+                alert(msg);
+            }
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e.message);
     }
 }
 
@@ -1486,38 +1530,64 @@ function renderFlatView() {
         container.innerHTML = '<div class="ads-empty">Объявления не найдены. Нажмите «Синхронизировать объявления»</div>';
         return;
     }
-    let tbody = document.getElementById('adsBody');
-    if (!tbody) {
-        container.innerHTML = '<table class="ads-table">' +
-            '<thead><tr>' +
-                '<th data-col="title" onclick="adsSort(\'title\')">Название</th>' +
-                '<th data-col="address" onclick="adsSort(\'address\')">Город</th>' +
-                '<th data-col="placed_at" onclick="adsSort(\'placed_at\')">Дата размещения</th>' +
-                '<th data-col="impressions" onclick="adsSort(\'impressions\')">Показы</th>' +
-                '<th>CV</th>' +
-                '<th data-col="views" onclick="adsSort(\'views\')">Просмотры</th>' +
-                '<th>CV</th>' +
-                '<th data-col="favorites" onclick="adsSort(\'favorites\')">Избранное</th>' +
-                '<th data-col="contacts" onclick="adsSort(\'contacts\')">Контакты</th>' +
-                '<th data-col="spent" onclick="adsSort(\'spent\')">Потрачено</th>' +
-                '<th data-col="price_per_view" onclick="adsSort(\'price_per_view\')">Цена просмотра</th>' +
-                '<th data-col="price_per_contact" onclick="adsSort(\'price_per_contact\')">Цена контакта</th>' +
-                '<th>Этапы воронки</th>' +
-            '</tr><tr id="adsTotalRow" class="ads-total-row"></tr></thead>' +
-            '<tbody id="adsBody"></tbody>' +
-        '</table>';
-        tbody = document.getElementById('adsBody');
-    }
-    // Stats date
+    // Build stage columns from first item's stage_stats (ordered from server)
+    const stageCols = (adsData[0]?.stage_stats || []).map(s => ({ name: s.stage_name, color: s.color }));
+    const stageTh = stageCols.map(s =>
+        `<th class="ads-stage-th" style="border-bottom-color:${s.color}">${esc(s.name)}</th>`
+    ).join('');
+    const stageTotalTd = stageCols.map(() => '<td class="ads-total-val ads-stage-total-val"></td>').join('');
+    container.innerHTML = '<table class="ads-table' + (showStages ? '' : ' hide-stage-cols') + '">' +
+        '<thead><tr>' +
+            '<th style="width:30px"><input type="checkbox" onchange="toggleAllCheckboxes(this)"></th>' +
+            '<th data-col="title" onclick="adsSort(\'title\')">Название</th>' +
+            '<th data-col="address" onclick="adsSort(\'address\')">Город</th>' +
+            '<th data-col="placed_at" onclick="adsSort(\'placed_at\')">Дата размещения</th>' +
+            '<th data-col="impressions" onclick="adsSort(\'impressions\')">Показы</th>' +
+            '<th>CV</th>' +
+            '<th data-col="views" onclick="adsSort(\'views\')">Просмотры</th>' +
+            '<th>CV</th>' +
+            '<th data-col="favorites" onclick="adsSort(\'favorites\')">Избранное</th>' +
+            '<th data-col="contacts" onclick="adsSort(\'contacts\')">Контакты</th>' +
+            '<th data-col="spent" onclick="adsSort(\'spent\')">Потрачено</th>' +
+            '<th data-col="price_per_view" onclick="adsSort(\'price_per_view\')">Цена просмотра</th>' +
+            '<th data-col="price_per_contact" onclick="adsSort(\'price_per_contact\')">Цена контакта</th>' +
+            stageTh +
+        '</tr><tr id="adsTotalRow" class="ads-total-row">' +
+            '<td colspan="4" class="ads-total-label" id="adsTotalLabel"></td>' +
+            '<td class="ads-total-val" id="totalImp"></td>' +
+            '<td class="ads-total-val" id="totalCV1"></td>' +
+            '<td class="ads-total-val" id="totalViews"></td>' +
+            '<td class="ads-total-val" id="totalCV2"></td>' +
+            '<td class="ads-total-val" id="totalFav"></td>' +
+            '<td class="ads-total-val" id="totalCont"></td>' +
+            '<td class="ads-total-val" id="totalSpent"></td>' +
+            '<td class="ads-total-val" id="totalPPV"></td>' +
+            '<td class="ads-total-val" id="totalPPC"></td>' +
+            stageTotalTd +
+        '</tr></thead>' +
+        '<tbody id="adsBody"></tbody>' +
+    '</table>';
+    const tbody = document.getElementById('adsBody');
+    // Stats date & active count
     const dates = adsData.map(a => a.stats_updated_at).filter(Boolean);
     const dateEl = document.getElementById('adsStatsDate');
+    const totalLabel = document.getElementById('adsTotalLabel');
+    const activeCount = adsData.filter(a => a.is_active !== false).length;
+    const totalCount = adsData.length;
+    if (totalLabel) {
+        totalLabel.textContent = `${activeCount} активных / ${totalCount} всего`;
+    }
     if (dateEl) {
         if (dates.length) {
             const latest = dates.reduce((a, b) => new Date(a) > new Date(b) ? a : b);
             const d = new Date(latest);
-            dateEl.textContent = 'Статистика обновлена: ' + d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            dateEl.textContent = `обновлено ${time} ${day}-${month}-${year}`;
         } else {
-            dateEl.textContent = 'Статистика не загружена. Нажмите «Обновить статистику»';
+            dateEl.textContent = '';
         }
     }
     // Totals
@@ -1536,17 +1606,38 @@ function renderFlatView() {
         const avgContactCost = hasSpent && hasCont ? sumSpent / sumCont : null;
         const cvImpViews = hasImp && hasViews ? sumViews / sumImp : null;
         const cvViewsCont = hasViews && hasCont ? sumCont / sumViews : null;
-        totalRow.innerHTML = '<td colspan="3" class="ads-total-label">Итого по всем объявлениям</td>'
-            + `<td class="ads-total-val">${hasImp ? sumImp.toLocaleString('ru-RU') : '—'}</td>`
-            + `<td class="ads-total-val">${cvImpViews != null ? fmtCV(cvImpViews) : '—'}</td>`
-            + `<td class="ads-total-val">${hasViews ? sumViews.toLocaleString('ru-RU') : '—'}</td>`
-            + `<td class="ads-total-val">${cvViewsCont != null ? fmtCV(cvViewsCont) : '—'}</td>`
-            + `<td class="ads-total-val">${hasFav ? sumFav.toLocaleString('ru-RU') : '—'}</td>`
-            + `<td class="ads-total-val">${hasCont ? sumCont.toLocaleString('ru-RU') : '—'}</td>`
-            + `<td class="ads-total-val">${hasSpent ? fmtMoney(sumSpent) : '—'}</td>`
-            + `<td class="ads-total-val">${avgViewCost != null ? fmtMoney(avgViewCost) : '—'}</td>`
-            + `<td class="ads-total-val">${avgContactCost != null ? fmtMoney(avgContactCost) : '—'}</td>`
-            + '<td></td>';
+        document.getElementById('totalImp').textContent = hasImp ? sumImp.toLocaleString('ru-RU') : '—';
+        document.getElementById('totalCV1').textContent = cvImpViews != null ? fmtCV(cvImpViews) : '—';
+        document.getElementById('totalViews').textContent = hasViews ? sumViews.toLocaleString('ru-RU') : '—';
+        document.getElementById('totalCV2').textContent = cvViewsCont != null ? fmtCV(cvViewsCont) : '—';
+        document.getElementById('totalFav').textContent = hasFav ? sumFav.toLocaleString('ru-RU') : '—';
+        document.getElementById('totalCont').textContent = hasCont ? sumCont.toLocaleString('ru-RU') : '—';
+        document.getElementById('totalSpent').textContent = hasSpent ? fmtMoney(sumSpent) : '—';
+        document.getElementById('totalPPV').textContent = avgViewCost != null ? fmtMoney(avgViewCost) : '—';
+        document.getElementById('totalPPC').textContent = avgContactCost != null ? fmtMoney(avgContactCost) : '—';
+        // Stage totals: sum counts per stage, calc aggregated conversion
+        const stageTds = totalRow.querySelectorAll('.ads-total-val');
+        const stageOffset = 9; // fixed columns: totalImp, CV1, views, CV2, fav, cont, spent, ppv, ppc
+        for (let i = 0; i < stageCols.length; i++) {
+            const td = stageTds[stageOffset + i];
+            if (!td) break;
+            const totalCount = adsData.reduce((s, a) => s + ((a.stage_stats[i] || {}).count || 0), 0);
+            const prevTotal = i > 0
+                ? adsData.reduce((s, a) => s + ((a.stage_stats[i - 1] || {}).count || 0), 0) : null;
+            if (i > 0 && prevTotal != null && prevTotal > 0) {
+                td.textContent = totalCount + ' (' + (totalCount / prevTotal * 100).toFixed(1) + '%)';
+            } else {
+                td.textContent = totalCount > 0 ? String(totalCount) : '—';
+            }
+        }
+    }
+    // Fix sticky header: set totals row top = header row height
+    const headerRow = document.querySelector('.ads-table thead tr:first-child');
+    if (headerRow) {
+        const h = headerRow.getBoundingClientRect().height;
+        if (h > 0) {
+            document.querySelectorAll('.ads-total-row td').forEach(td => td.style.top = h + 'px');
+        }
     }
     let data = [...adsData];
     if (adsSortCol) {
@@ -1561,11 +1652,20 @@ function renderFlatView() {
     tbody.innerHTML = data.map(a => {
         const cv1 = a.views && a.impressions ? a.views / a.impressions : null;
         const cv2 = a.contacts && a.views ? a.contacts / a.views : null;
-        const stages = (a.stage_stats || []).map(s =>
-            `<span class="stage-dot" style="background:${esc(s.color)}"></span>${esc(s.stage_name)}: ${s.count}`
-        ).join(' ');
+        const stageCells = (a.stage_stats || []).map((s, idx) => {
+            const prev = idx > 0 ? a.stage_stats[idx - 1] : null;
+            let display = String(s.count);
+            if (idx > 0 && prev && prev.count > 0 && s.conversion_pct != null) {
+                display += ' (' + s.conversion_pct + '%)';
+            }
+            return `<td class="ads-stage-cell" style="border-left-color:${s.color}">${display}</td>`;
+        }).join('');
+        const statusIcon = a.is_active !== false
+            ? '<span class="ads-status-dot ads-status-active" title="Активно"></span>'
+            : '<span class="ads-status-dot ads-status-inactive" title="Снято"></span> <a href="#" onclick="restoreItem(' + a.avito_item_id + ')" class="ads-restore-link" title="Восстановить на Avito">↻</a>';
         return `<tr>
-            <td><a href="${esc(a.url)}" target="_blank">${esc(a.title)}</a></td>
+            <td><input type="checkbox" class="item-checkbox" data-item-id="${a.avito_item_id}" onchange="updateMovePanel()"></td>
+            <td>${statusIcon} <a href="${esc(a.url)}" target="_blank">${esc(a.title)}</a></td>
             <td>${esc(a.address)}</td>
             <td>${a.placed_at ? fmtDateShort(a.placed_at) : '—'}</td>
             <td>${a.impressions != null ? a.impressions.toLocaleString('ru-RU') : '—'}</td>
@@ -1577,7 +1677,7 @@ function renderFlatView() {
             <td>${a.spent != null ? fmtMoney(a.spent) : '—'}</td>
             <td>${a.price_per_view != null ? fmtMoney(a.price_per_view) : '—'}</td>
             <td>${a.price_per_contact != null ? fmtMoney(a.price_per_contact) : '—'}</td>
-            <td>${stages || '—'}</td>
+            ${stageCells}
         </tr>`;
     }).join('');
 }
@@ -1602,6 +1702,13 @@ async function toggleGroups() {
     await applyAdsSort();
 }
 
+function toggleStages() {
+    showStages = !showStages;
+    const toggle = document.getElementById('stagesToggle');
+    if (toggle) toggle.classList.toggle('active', showStages);
+    applyAdsSort();
+}
+
 async function openGroupManager() {
     await loadGroups();
     const list = document.getElementById('groupList');
@@ -1610,8 +1717,8 @@ async function openGroupManager() {
         '<div class="group-mgr-row">' +
             '<span>' + esc(g.name) + '</span>' +
             '<div>' +
-                '<button class="btn btn-sm" onclick="renameGroup(' + g.id + ', ' + JSON.stringify(g.name) + ')">✏️</button>' +
-                '<button class="btn btn-sm" onclick="deleteGroup(' + g.id + ', ' + JSON.stringify(g.name) + ')">✕</button>' +
+                '<button class="btn btn-sm" onclick="renameGroup(' + g.id + ", '" + encodeURIComponent(g.name) + ')">✏️</button>' +
+                '<button class="btn btn-sm" onclick="deleteGroup(' + g.id + ", '" + encodeURIComponent(g.name) + ')">✕</button>' +
             '</div>' +
         '</div>'
     ).join('');
@@ -1631,6 +1738,7 @@ async function addGroup() {
 }
 
 async function renameGroup(id, currentName) {
+    currentName = decodeURIComponent(currentName);
     const name = prompt('Новое название:', currentName);
     if (!name || name === currentName) return;
     try {
@@ -1641,6 +1749,7 @@ async function renameGroup(id, currentName) {
 }
 
 async function deleteGroup(id, name) {
+    name = decodeURIComponent(name);
     if (!confirm('Удалить группу "' + name + '"? Объявления будут перенесены в Неопределено.')) return;
     try {
         await api('/api/avito/groups/' + id, 'DELETE');
@@ -1681,9 +1790,13 @@ async function renderGroupedView() {
         if (dates.length) {
             const latest = dates.reduce((a, b) => new Date(a) > new Date(b) ? a : b);
             const d = new Date(latest);
-            dateEl.textContent = 'Статистика обновлена: ' + d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            dateEl.textContent = `обновлено ${time} ${day}-${month}-${year}`;
         } else {
-            dateEl.textContent = 'Статистика не загружена. Нажмите «Обновить статистику»';
+            dateEl.textContent = '';
         }
     }
 
@@ -1714,12 +1827,23 @@ async function renderGroupedView() {
     function cell(v, fmt) { return '<td class="ads-total-val">' + (v != null ? (fmt ? fmt(v) : v.toLocaleString('ru-RU')) : '—') + '</td>'; }
     function money(v) { return v != null ? fmtMoney(v) : '—'; }
 
-    function totalRow(label, totals) {
+    function totalRow(label, totals, srcItems) {
         const c = totals;
         const avgV = c.spent && c.views ? c.spent / c.views : null;
         const avgC = c.spent && c.contacts ? c.spent / c.contacts : null;
         const cv1 = c.impressions && c.views ? c.views / c.impressions : null;
         const cv2 = c.views && c.contacts ? c.contacts / c.views : null;
+        const src = srcItems || adsData;
+        const stageTd = stageCols.map((sc, i) => {
+            const totalCount = src.reduce((s, a) => s + ((a.stage_stats[i] || {}).count || 0), 0);
+            const prevTotal = i > 0
+                ? src.reduce((s, a) => s + ((a.stage_stats[i - 1] || {}).count || 0), 0) : null;
+            let text = totalCount > 0 ? String(totalCount) : '—';
+            if (i > 0 && prevTotal != null && prevTotal > 0) {
+                text += ' (' + (totalCount / prevTotal * 100).toFixed(1) + '%)';
+            }
+            return '<td class="ads-total-val">' + text + '</td>';
+        }).join('');
         return '<tr class="ads-total-row">' +
             '<td></td>' +
             '<td colspan="3" class="ads-total-label">' + label + '</td>' +
@@ -1732,10 +1856,15 @@ async function renderGroupedView() {
             cell(c.spent, money) +
             cell(avgV, money) +
             cell(avgC, money) +
-            '<td></td>' +
+            stageTd +
         '</tr>';
     }
 
+    const stageCols = (adsData[0]?.stage_stats || []).map(s => ({ name: s.stage_name, color: s.color }));
+    const stageTh = stageCols.map(s =>
+        `<th class="ads-stage-th" style="border-bottom-color:${s.color}">${esc(s.name)}</th>`
+    ).join('');
+    const stageTotalTd = stageCols.map(() => '<td class="ads-total-val ads-stage-total-val"></td>').join('');
     const th = '<th data-col="title" onclick="adsSort(\'title\')">Название</th>' +
         '<th data-col="address" onclick="adsSort(\'address\')">Город</th>' +
         '<th data-col="placed_at" onclick="adsSort(\'placed_at\')">Дата</th>' +
@@ -1748,12 +1877,12 @@ async function renderGroupedView() {
         '<th data-col="spent" onclick="adsSort(\'spent\')">Потрачено</th>' +
         '<th data-col="price_per_view" onclick="adsSort(\'price_per_view\')">Цена просмотра</th>' +
         '<th data-col="price_per_contact" onclick="adsSort(\'price_per_contact\')">Цена контакта</th>' +
-        '<th>Этапы</th>';
+        stageTh;
 
     // Overall totals section
     let html = '<div class="group-overall">' +
-        '<table class="ads-table">' +
-            '<thead><tr><th style="width:30px"></th>' + th + '</tr>' + totalRow('Итого по всем объявлениям', overall) + '</thead>' +
+        '<table class="ads-table' + (showStages ? '' : ' hide-stage-cols') + '">' +
+            '<thead><tr><th style="width:30px"></th>' + th + '</tr>' + totalRow('Итого по всем объявлениям', overall, adsData) + '</thead>' +
         '</table>' +
     '</div>';
 
@@ -1770,19 +1899,27 @@ async function renderGroupedView() {
                 '<span class="group-count">(' + items.length + ')</span>' +
             '</div>' +
             '<div class="group-body">' +
-                '<table class="ads-table">' +
+                '<table class="ads-table' + (showStages ? '' : ' hide-stage-cols') + '">' +
                     '<thead><tr>' +
                         '<th style="width:30px"><input type="checkbox" onchange="toggleGroupSelect(this, ' + g.id + ')"></th>' +
                         th +
                     '</tr>' + totalRow('Итого по ' + esc(g.name), tot) + '</thead>' +
                     '<tbody>' +
                         items.map(function(a) {
-                            const stages = (a.stage_stats || []).map(function(s) {
-                                return '<span class="stage-dot" style="background:' + esc(s.color) + '"></span>' + esc(s.stage_name) + ': ' + s.count;
-                            }).join(' ');
+                            const stageCells = (a.stage_stats || []).map(function(s, idx) {
+                                const prev = idx > 0 ? a.stage_stats[idx - 1] : null;
+                                let display = String(s.count);
+                                if (idx > 0 && prev && prev.count > 0 && s.conversion_pct != null) {
+                                    display += ' (' + s.conversion_pct + '%)';
+                                }
+                                return '<td class="ads-stage-cell" style="border-left-color:' + s.color + '">' + display + '</td>';
+                            }).join('');
+                            const si = a.is_active !== false
+                                ? '<span class="ads-status-dot ads-status-active" title="Активно"></span>'
+                                : '<span class="ads-status-dot ads-status-inactive" title="Снято"></span> <a href="#" onclick="restoreItem(' + a.avito_item_id + ')" class="ads-restore-link" title="Восстановить на Avito">↻</a>';
                             return '<tr>' +
                                 '<td><input type="checkbox" class="item-checkbox" data-item-id="' + a.avito_item_id + '" onchange="updateMovePanel()"></td>' +
-                                '<td><a href="' + esc(a.url) + '" target="_blank">' + esc(a.title) + '</a></td>' +
+                                '<td>' + si + ' <a href="' + esc(a.url) + '" target="_blank">' + esc(a.title) + '</a></td>' +
                                 '<td>' + esc(a.address) + '</td>' +
                                 '<td>' + (a.placed_at ? fmtDateShort(a.placed_at) : '—') + '</td>' +
                                 '<td>' + (a.impressions != null ? a.impressions.toLocaleString('ru-RU') : '—') + '</td>' +
@@ -1794,7 +1931,7 @@ async function renderGroupedView() {
                                 '<td>' + (a.spent != null ? fmtMoney(a.spent) : '—') + '</td>' +
                                 '<td>' + (a.price_per_view != null ? fmtMoney(a.price_per_view) : '—') + '</td>' +
                                 '<td>' + (a.price_per_contact != null ? fmtMoney(a.price_per_contact) : '—') + '</td>' +
-                                '<td>' + (stages || '—') + '</td>' +
+                                stageCells +
                             '</tr>';
                         }).join('') +
                     '</tbody>' +
@@ -1809,6 +1946,7 @@ async function renderGroupedView() {
             groupsData.map(function(g) { return '<option value="' + g.id + '">' + esc(g.name) + '</option>'; }).join('') +
         '</select>' +
         '<button class="btn btn-sm" onclick="moveSelectedItems()">Перенести</button>' +
+        '<button class="btn btn-sm" onclick="bulkRestoreItems()">Восстановить</button>' +
     '</div>';
 
     container.innerHTML = html;
@@ -1830,6 +1968,43 @@ function toggleGroupSelect(checkbox, groupId) {
         for (const cb of items) cb.checked = checkbox.checked;
     }
     updateMovePanel();
+}
+
+function toggleAllCheckboxes(checkbox) {
+    document.querySelectorAll('.item-checkbox').forEach(function(cb) { cb.checked = checkbox.checked; });
+    updateMovePanel();
+}
+
+async function bulkRestoreItems() {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    if (checked.length === 0) { alert('Не выбрано ни одного объявления'); return; }
+    const itemIds = Array.from(checked).map(function(cb) { return parseInt(cb.dataset.itemId); });
+    const inactiveIds = itemIds.filter(function(id) {
+        const a = adsData.find(function(ad) { return ad.avito_item_id == id; });
+        return a && a.is_active === false;
+    });
+    if (inactiveIds.length === 0) { alert('Среди выбранных нет снятых объявлений'); return; }
+    if (!confirm('Проверить и восстановить ' + inactiveIds.length + ' объявлений?')) return;
+    try {
+        const r = await api('/api/avito/items/bulk-restore', 'POST', { item_ids: inactiveIds });
+        let msg = '';
+        if (r.restored && r.restored.length) msg += 'Восстановлено: ' + r.restored.length + '\n';
+        if (r.failed && r.failed.length) {
+            msg += '\nНе удалось восстановить:\n';
+            r.failed.forEach(function(f) { msg += '  • ' + f.title + ' — ' + f.message + '\n'; });
+            if (r.hasUrls) msg += '\nОткрыть страницы снятых объявлений в браузере?';
+        }
+        if (msg) {
+            if (r.failed && r.failed.length && r.hasUrls) {
+                if (confirm(msg)) {
+                    r.failed.forEach(function(f) { if (f.url) window.open(f.url, '_blank'); });
+                }
+            } else {
+                alert(msg);
+            }
+        }
+        await refreshAds();
+    } catch (e) { alert('Ошибка: ' + e.message); }
 }
 
 function updateMovePanel() {
@@ -1883,19 +2058,23 @@ async function renderAds() {
             // keep _lastSyncStatus as-is (completed message or empty)
         }
     }
-    const statsBtn = statsInfo.has_data
-        ? '<button class="btn" onclick="refreshAvitoStats()">Обновить статистику</button>'
-        : '<button class="btn" onclick="showSyncStatsModal()">Загрузить статистику</button>';
+    const hasData = statsInfo.has_data;
     el.innerHTML = `
         <div class="ads-toolbar">
-            <button class="btn" onclick="syncAvitoItems()">Синхронизировать объявления</button>
-            ${statsBtn}
+            <div class="ads-btn-group">
+                <button class="btn btn-primary" onclick="syncAllAvito()">Обновить статистику</button>
+                <div class="ads-sync-status" id="adsSyncStatus">${esc(_lastSyncStatus.message)}</div>
+                <div class="ads-stats-date" id="adsStatsDate"></div>
+            </div>
             <label class="toggle-group${groupsEnabled ? ' active' : ''}" id="groupsToggle" onclick="toggleGroups()">
                 <span class="toggle-slider"></span>
                 <span>Группы</span>
             </label>
             <button class="btn btn-sm" onclick="openGroupManager()">Управление группами</button>
-            <span id="adsSyncStatus">${esc(_lastSyncStatus.message)}</span>
+            <label class="toggle-group${showStages ? ' active' : ''}" id="stagesToggle" onclick="toggleStages()">
+                <span class="toggle-slider"></span>
+                <span>Статистика воронки</span>
+            </label>
         </div>
         <div class="date-selector">
             <button class="btn btn-sm" data-range="today" onclick="setAdsRange('today')">День</button>
@@ -1909,7 +2088,6 @@ async function renderAds() {
                 <button class="btn btn-sm" onclick="refreshAds()">OK</button>
             </span>
         </div>
-        <div class="ads-stats-date" id="adsStatsDate"></div>
         <div id="adsTableContainer">
             <table class="ads-table">
                 <thead>
@@ -1946,6 +2124,30 @@ async function syncAvitoItems() {
         refreshAds();
     } catch (e) {
         statusEl.textContent = `Ошибка: ${e.message}`;
+    }
+}
+
+async function syncAllAvito() {
+    _setSyncStatus('Синхронизация объявлений...', true);
+    try {
+        const syncRes = await api('/api/avito/sync-items', 'POST');
+        _setSyncStatus(`Объявления: ${syncRes.synced} шт. Обновление статистики...`, true);
+        const statsRes = await api('/api/avito/refresh-stats', 'POST');
+        if (statsRes.need_choice) {
+            _setSyncStatus('', false);
+            showRefreshChoiceModal(statsRes.last_date);
+            return;
+        }
+        if (statsRes.status === 'started') {
+            _setSyncStatus(`Загрузка статистики (${statsRes.total_days} дней)...`, true);
+            _pollSyncProgress();
+            return;
+        }
+        const msg = `Синхронизировано: ${syncRes.synced} объявлений, статистика обновлена`;
+        _setSyncStatus(msg, false);
+        refreshAds();
+    } catch (e) {
+        _setSyncStatus(`Ошибка: ${e.message}`, false);
     }
 }
 
@@ -2191,9 +2393,7 @@ function startAvitoSyncTimer() {
         } catch (e) {
             // silently ignore
         }
-    }, 60000);
-    // Request notification permission
-    if (Notification.permission === 'default') Notification.requestPermission();
+    }, 300000);
     // Initial check
     setTimeout(checkNewAvitoMessages, 5000);
 }
@@ -2431,7 +2631,7 @@ function renderNotifPanel() {
     } else {
         html += data.items.map(n => {
             const color = colors[n.type] || 'var(--text-muted)';
-            const onclick = n.link_id ? `onclick="notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
+            const onclick = n.link_id != null ? `onclick="notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
             return `<div class="notif-item" ${onclick}>
                 <span class="notif-dot" style="background:${color}"></span>
                 <div><div class="notif-title">${esc(n.message)}</div>
@@ -2509,7 +2709,7 @@ async function openNotifFeed() {
             list.innerHTML = order.filter(g => groups[g]).map(g => {
                 const items = groups[g].map(n => {
                     const cfg = typeConfig[n.type] || { icon: '•', color: 'var(--text-muted)', label: '' };
-                    const onclick = n.link_id ? `onclick="closeModal('notifFeedModal');notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
+                    const onclick = n.link_id != null ? `onclick="closeModal('notifFeedModal');notifClick(${n.id},'${n.type}',${n.link_id})"` : '';
                     const time = n.time ? n.time.slice(11, 16) : '';
                     return `<div class="notif-feed-item" ${onclick}>
                         <div class="notif-feed-icon" style="background:${cfg.color}15;color:${cfg.color}">${cfg.icon}</div>
@@ -2545,16 +2745,24 @@ async function notifClick(notifId, type, linkId) {
         openDetail(linkId);
     } else if (type === 'overdue_task') {
         switchTab('tasks');
-    } else if (type === 'today_task' || type === 'tomorrow_task') {
+    } else if (type === 'today_task') {
         switchTab('tasks');
+    } else if (type === 'tomorrow_task') {
+        document.getElementById('filterStage').value = '';
+        document.getElementById('filterSource').value = '';
+        document.getElementById('filterTag').value = '';
+        document.getElementById('searchInput').value = '';
+        document.getElementById('filterTask').value = 'tomorrow';
+        switchTab('pipeline');
+        await doSearch();
     } else if (type === 'no_task') {
         document.getElementById('filterStage').value = '';
         document.getElementById('filterSource').value = '';
         document.getElementById('filterTag').value = '';
         document.getElementById('searchInput').value = '';
         document.getElementById('filterTask').value = 'none';
-        switchTab('dashboard');
-        doSearch();
+        switchTab('pipeline');
+        await doSearch();
     }
     setTimeout(pollNotifications, 1000);
 }
@@ -2568,14 +2776,39 @@ document.addEventListener('click', function(e) {
     }
 });
 
-setInterval(pollNotifications, 15000);
+if (_pollNotifInterval) clearInterval(_pollNotifInterval);
+_pollNotifInterval = setInterval(pollNotifications, 15000);
 setTimeout(pollNotifications, 3000);
 
-if (localStorage.getItem('crm-notif') !== '0' && Notification.permission === 'default') {
-    Notification.requestPermission();
-}
-setInterval(checkTasks, 30000);
+if (_checkTasksInterval) clearInterval(_checkTasksInterval);
+_checkTasksInterval = setInterval(checkTasks, 30000);
 setTimeout(checkTasks, 5000);
+
+/* Drag-to-scroll for ads table */
+(function() {
+    let isDown = false, startX, startY, scrollL, scrollT;
+    document.addEventListener('mousedown', e => {
+        const el = e.target.closest('#adsTableContainer');
+        if (!el || e.target.closest('a, button, input, select, textarea, th')) return;
+        isDown = true; startX = e.pageX - el.offsetLeft; startY = e.pageY - el.offsetTop;
+        scrollL = el.scrollLeft; scrollT = el.scrollTop;
+        el.classList.add('dragging');
+    });
+    document.addEventListener('mousemove', e => {
+        if (!isDown) return;
+        e.preventDefault();
+        const el = document.querySelector('#adsTableContainer');
+        if (!el) return;
+        const x = e.pageX - el.offsetLeft; const y = e.pageY - el.offsetTop;
+        el.scrollLeft = scrollL - (x - startX); el.scrollTop = scrollT - (y - startY);
+    });
+    document.addEventListener('mouseup', () => {
+        if (!isDown) return;
+        isDown = false;
+        const el = document.querySelector('#adsTableContainer');
+        if (el) el.classList.remove('dragging');
+    });
+})();
 
 /* Init */
 loadData();

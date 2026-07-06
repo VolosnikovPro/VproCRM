@@ -3,10 +3,10 @@
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['C:\\Users\\aleksey\\Documents\\Projects\\CRM'],
     binaries=[],
     datas=[('static', 'static')],
-    hiddenimports=['uvicorn', 'sqlalchemy', 'sqlalchemy.ext.declarative', 'sqlalchemy.orm', 'webview', 'python_multipart', 'httpx'],
+    hiddenimports=['server', 'database', 'models', 'schemas', 'avito_api', 'uvicorn', 'sqlalchemy', 'sqlalchemy.ext.declarative', 'sqlalchemy.orm', 'webview', 'python_multipart', 'httpx'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -3,20 +3,25 @@ import io
 import os
 import sys
 import json
+import re
 import shutil
+import sqlite3
+import time
 import calendar
 import threading
+from copy import deepcopy
 from datetime import datetime, date, timedelta
 from typing import Optional, List
 import uuid
 import uvicorn
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Body
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, FileResponse, Response
 from starlette.types import Scope
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, exists
 
 from database import init_db, get_db, engine, DB_DIR
 from models import PipelineStage, Source, Tag, Client, Note, Task, ActivityLog, ClientCustomField, Attachment, client_tags, AvitoToken, AvitoChat, AvitoMessage, AvitoItem, AvitoItemDailyStat, RejectionReason, AvitoGroup, Notification
@@ -82,18 +87,27 @@ init_db()
 
 @app.on_event("startup")
 def on_startup():
-    _seed_stages()
-    _seed_sources()
-    _seed_rejection_reasons()
-    _seed_default_groups()
-    _rename_group_if_exists("Мобильная разработка", "IT разработка")
-    _auto_assign_groups()
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        _seed_stages(db)
+        _seed_sources(db)
+        _seed_rejection_reasons(db)
+        _seed_default_groups(db)
+        _rename_group_if_exists("Мобильная разработка", "IT разработка", db)
+        _auto_assign_groups(db)
+    finally:
+        db.close()
     threading.Thread(target=_refresh_avito_token, daemon=True).start()
 
 
-def _seed_stages():
-    from database import SessionLocal
-    db = SessionLocal()
+def _seed_stages(db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         if db.query(PipelineStage).count() == 0:
             for name, order, color in [
@@ -107,31 +121,42 @@ def _seed_stages():
                 db.add(PipelineStage(name=name, order=order, color=color))
             db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
-def _seed_sources():
-    from database import SessionLocal
-    db = SessionLocal()
+def _seed_sources(db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         if db.query(Source).count() == 0:
             for i, name in enumerate(["Сайт", "Звонок", "Почта", "Мессенджер", "Рекомендация", "Другое"]):
                 db.add(Source(name=name, order=i))
             db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
-def _seed_rejection_reasons():
-    from database import SessionLocal
-    db = SessionLocal()
+def _seed_rejection_reasons(db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         if db.query(RejectionReason).count() == 0:
             for i, name in enumerate(["Дорого", "Пропал/не отвечает", "Заказал у другого"]):
                 db.add(RejectionReason(name=name, order=i))
             db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
 @app.get("/api/rejection-reasons", response_model=List[RejectionReasonResponse])
@@ -177,9 +202,10 @@ def _enrich_client(client):
     now = datetime.now().replace(microsecond=0)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow_start = today_start + timedelta(days=1)
+    day_after_start = today_start + timedelta(days=2)
     week_end = today_start + timedelta(days=7)
     tasks = client.tasks or []
-    overdue = 0; today = 0; week = 0; later = 0
+    overdue = 0; today = 0; tomorrow = 0; week = 0; later = 0
     for t in tasks:
         if t.completed or not t.due_date:
             if not t.completed and not t.due_date: later += 1
@@ -187,11 +213,13 @@ def _enrich_client(client):
         d = t.due_date.replace(tzinfo=None)
         if d < today_start: overdue += 1
         elif d < tomorrow_start: today += 1
+        elif d < day_after_start: tomorrow += 1
         elif d < week_end: week += 1
         else: later += 1
     client.task_count = len(tasks)
     client.overdue_count = overdue
     client.today_count = today
+    client.tomorrow_count = tomorrow
     client.week_count = week
     client.later_count = later
     logs = client.activity_log or []
@@ -204,9 +232,12 @@ def _enrich_client(client):
 @app.get("/api/stages", response_model=list[StageResponse])
 def get_stages(db: Session = Depends(get_db)):
     stages = db.query(PipelineStage).order_by(PipelineStage.order).all()
+    reject_stage = db.query(PipelineStage).filter(PipelineStage.name == "Отказ").first()
+    reject_stage_id = reject_stage.id if reject_stage else -1
     return [StageResponse(
         id=s.id, name=s.name, order=s.order, color=s.color,
-        client_count=len(s.clients), total_budget=sum(c.budget for c in s.clients)
+        client_count=len(s.clients),
+        total_budget=sum(c.budget for c in s.clients if s.id != reject_stage_id)
     ) for s in stages]
 
 
@@ -224,7 +255,9 @@ def update_stage(stage_id: int, data: StageCreate, db: Session = Depends(get_db)
         raise HTTPException(404, "Stage not found")
     s.name = data.name; s.order = data.order; s.color = data.color
     db.commit(); db.refresh(s)
-    return StageResponse(id=s.id, name=s.name, order=s.order, color=s.color, client_count=len(s.clients), total_budget=sum(c.budget for c in s.clients))
+    reject_stage = db.query(PipelineStage).filter(PipelineStage.name == "Отказ").first()
+    reject_stage_id = reject_stage.id if reject_stage else -1
+    return StageResponse(id=s.id, name=s.name, order=s.order, color=s.color, client_count=len(s.clients), total_budget=sum(c.budget for c in s.clients if s.id != reject_stage_id))
 
 
 @app.delete("/api/stages/{stage_id}")
@@ -317,6 +350,7 @@ def get_clients(
     tag_id: int | None = None,
     query: str | None = None,
     no_tasks: bool = False,
+    tomorrow: bool = False,
     db: Session = Depends(get_db),
 ):
     q = db.query(Client)
@@ -330,14 +364,27 @@ def get_clients(
         q = q.filter(~Client.tasks.any())
     if query:
         like = f"%{query}%"
+        avito_subq = exists().select_from(AvitoMessage).join(
+            AvitoChat, AvitoMessage.chat_id == AvitoChat.chat_id
+        ).where(
+            AvitoChat.client_id == Client.id,
+            AvitoMessage.content.ilike(like)
+        )
         q = q.filter(
             Client.name.ilike(like) | Client.phone.ilike(like) |
             Client.organization.ilike(like) | Client.email.ilike(like) |
-            Client.responsible.ilike(like)
+            Client.responsible.ilike(like) |
+            Client.notes.any(Note.content.ilike(like)) |
+            avito_subq
         )
     clients = q.order_by(Client.updated_at.desc()).all()
     for c in clients:
         _enrich_client(c)
+    # Archive: hide Отказ deals older than 7 days
+    reject_stage = db.query(PipelineStage).filter(PipelineStage.name == "Отказ").first()
+    reject_stage_id = reject_stage.id if reject_stage else -1
+    cutoff = datetime.now() - timedelta(days=7)
+    clients = [c for c in clients if not (c.stage_id == reject_stage_id and c.updated_at < cutoff)]
     return clients
 
 
@@ -447,7 +494,6 @@ def update_client(client_id: int, data: ClientUpdate, db: Session = Depends(get_
     db.commit(); db.refresh(client)
     if old_stage != client.stage_id:
         # Track stages passed
-        import json
         passed = json.loads(client.stages_passed or "[]")
         all_stages = db.query(PipelineStage).order_by(PipelineStage.order).all()
         stage_ids = [s.id for s in all_stages]
@@ -685,12 +731,17 @@ def get_dashboard(db: Session = Depends(get_db)):
     overdue_tasks = db.query(Task).filter(Task.completed == False, Task.due_date != None, Task.due_date < now).count()
     clients_with_tasks = db.query(Task.client_id).distinct().count()
 
-    # Budget
-    budget_data = db.query(func.coalesce(func.sum(Client.budget), 0), func.coalesce(func.avg(Client.budget), 0)).filter(Client.budget > 0).first()
+    # Budget (exclude Отказ)
+    reject_stage = db.query(PipelineStage).filter(PipelineStage.name == "Отказ").first()
+    reject_stage_id = reject_stage.id if reject_stage else -1
+    budget_data = db.query(func.coalesce(func.sum(Client.budget), 0), func.coalesce(func.avg(Client.budget), 0)).filter(Client.budget > 0, Client.stage_id != reject_stage_id).first()
     total_budget = float(budget_data[0])
     avg_budget = round(float(budget_data[1]), 0) if budget_data[1] else 0
     budget_by_stage = []
     for s in stages:
+        if s.id == reject_stage_id:
+            budget_by_stage.append({"name": s.name, "color": s.color, "budget": 0})
+            continue
         sb = db.query(func.coalesce(func.sum(Client.budget), 0)).filter(Client.stage_id == s.id).scalar()
         budget_by_stage.append({"name": s.name, "color": s.color, "budget": float(sb)})
 
@@ -717,7 +768,12 @@ def get_dashboard(db: Session = Depends(get_db)):
     # Monthly new clients (last 6 months)
     monthly = []
     for i in range(5, -1, -1):
-        m_start = datetime(now.year, now.month, 1) - timedelta(days=30 * i)
+        month = now.month - i
+        year = now.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        m_start = datetime(year, month, 1)
         if m_start.month == 12:
             m_end = datetime(m_start.year + 1, 1, 1)
         else:
@@ -854,11 +910,21 @@ def backup_db():
 async def restore_db(file: UploadFile = File(...)):
     content = await file.read()
     db_path = "crm.db"
+    tmp_path = f"crm.db.restore_tmp"
     backup_path = f"crm.db.bak"
+    with open(tmp_path, "wb") as f:
+        f.write(content)
+    try:
+        conn = sqlite3.connect(tmp_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master")
+        conn.close()
+    except Exception as e:
+        os.remove(tmp_path)
+        raise HTTPException(400, f"Файл повреждён: {e}")
     if os.path.exists(db_path):
         shutil.copy2(db_path, backup_path)
-    with open(db_path, "wb") as f:
-        f.write(content)
+    engine.dispose()
+    os.replace(tmp_path, db_path)
     return {"ok": True, "message": "БД восстановлена. Перезапустите приложение."}
 
 
@@ -900,15 +966,16 @@ def _save_avito_token(db: Session, client: SyncMessengerClient):
             if info.expires_at:
                 token.expires_at = datetime.fromtimestamp(info.expires_at)
             db.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Avito sync warning: {e}")
 
 
 def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, token: AvitoToken = None):
     try:
         resp = client.get_chats(user_id=int(user_id), limit=100)
         _save_avito_token(db, client)
-    except Exception:
+    except Exception as e:
+        print(f"Avito sync warning: {e}")
         return
     for c in resp.chats:
         chat_id = str(c.id)
@@ -941,6 +1008,7 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
         item_id_val = item.id if item else None
 
         existing = db.query(AvitoChat).filter(AvitoChat.chat_id == chat_id).first()
+        is_new_client = False
         if not existing:
             existing = AvitoChat(chat_id=chat_id, avito_user_id=user_id)
             db.add(existing)
@@ -968,6 +1036,7 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
                 existing_client.notes.append(Note(content=f"Объявление: {title}"))
             db.flush()
             existing.client_id = existing_client.id
+            is_new_client = True
         else:
             # preserve existing unread_count — will be recomputed after message sync
             if item_id_val:
@@ -979,8 +1048,8 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
         if c.last_message:
             try:
                 existing.last_message_at = datetime.fromtimestamp(c.last_message.created)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Avito sync warning: {e}")
 
         # Sync messages only for new chats or active (client-linked) chats
         is_active = existing.client_id is not None
@@ -1025,8 +1094,8 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
                     if m.read:
                         try:
                             msg.read_at = datetime.fromtimestamp(m.read)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"Avito sync warning: {e}")
                     db.add(msg)
                     # Create notification for new client message (only if unread, skip rejected)
                     if not is_ours and existing.client_id and existing.client and not msg.is_read:
@@ -1050,8 +1119,17 @@ def _sync_avito_chats(db: Session, client: SyncMessengerClient, user_id: str, to
                         AvitoMessage.author_id != str(user_id),
                     ).count()
                     existing.unread_count = unread
-            except Exception:
-                pass
+                # For new clients, set created_at to first message timestamp
+                if is_new_client and existing.client_id:
+                    first_msg = db.query(AvitoMessage).filter(
+                        AvitoMessage.chat_id == chat_id
+                    ).order_by(AvitoMessage.created_at.asc()).first()
+                    if first_msg and first_msg.created_at:
+                        client_obj = db.query(Client).filter(Client.id == existing.client_id).first()
+                        if client_obj:
+                            client_obj.created_at = first_msg.created_at
+            except Exception as e:
+                print(f"Avito sync warning: {e}")
     db.commit()
 
 
@@ -1061,8 +1139,6 @@ _sync_lock = threading.Lock()
 
 def _fetch_single_day(db, token, day):
     """Fetch stats for one day from Avito API, save to DB. Returns True on success."""
-    import time
-    from datetime import datetime
     day_start = datetime.combine(day, datetime.min.time())
     day_str = day.isoformat()
     headers = {"Authorization": f"Bearer {token.access_token}", "Content-Type": "application/json"}
@@ -1135,7 +1211,6 @@ def _fetch_single_day(db, token, day):
 def _background_sync_stats(token_id, date_from, date_to, total_days):
     """Background thread: sync one day per API call, respecting rate limits."""
     from database import SessionLocal
-    import time
     db = SessionLocal()
     try:
         token = db.query(AvitoToken).filter(AvitoToken.id == token_id).first()
@@ -1173,10 +1248,60 @@ def _background_sync_stats(token_id, date_from, date_to, total_days):
 
 def _get_sync_progress():
     with _sync_lock:
-        return dict(_stats_sync_state)
+        return deepcopy(_stats_sync_state)
+
+
+def _get_avito_user_id(token):
+    return token.user_id or token.company_id
 
 
 _syncing_items = False
+_syncing_items_lock = threading.Lock()
+_last_active_check = 0
+
+
+def _refresh_item_activity():
+    """Fetch active item IDs from Avito API and update is_active. Runs at most once per 5 minutes."""
+    global _last_active_check
+    from time import time
+    now = time()
+    if now - _last_active_check < 300:
+        return
+    _last_active_check = now
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        token = db.query(AvitoToken).first()
+        if not token:
+            return
+        headers = {"Authorization": f"Bearer {token.access_token}"}
+        active_ids = set()
+        page = 1
+        while True:
+            r = httpx.get("https://api.avito.ru/core/v1/items", headers=headers,
+                          params={"page": page, "per_page": 100}, timeout=30)
+            if r.status_code != 200:
+                break
+            resources = r.json().get("resources", [])
+            if not resources:
+                break
+            for res in resources:
+                iid = res.get("id")
+                if iid:
+                    active_ids.add(iid)
+            if len(resources) < 100:
+                break
+            page += 1
+        db.query(AvitoItem).update({"is_active": False})
+        if active_ids:
+            db.query(AvitoItem).filter(AvitoItem.avito_item_id.in_(active_ids)).update(
+                {"is_active": True}, synchronize_session=False
+            )
+        db.commit()
+    except Exception as e:
+        print(f"Avito sync warning: {e}")
+    finally:
+        db.close()
 
 
 def _refresh_avito_token():
@@ -1202,15 +1327,19 @@ def _refresh_avito_token():
             token.refresh_token = ""
             token.expires_at = datetime.now() + timedelta(seconds=data.get("expires_in", 86400))
             db.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Avito sync warning: {e}")
     finally:
         db.close()
 
 
-def _seed_default_groups():
-    from database import SessionLocal
-    db = SessionLocal()
+def _seed_default_groups(db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         if db.query(AvitoGroup).count() > 0:
             return
@@ -1219,23 +1348,33 @@ def _seed_default_groups():
             db.add(AvitoGroup(name=name, sort_order=i))
         db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
-def _rename_group_if_exists(old_name, new_name):
-    from database import SessionLocal
-    db = SessionLocal()
+def _rename_group_if_exists(old_name, new_name, db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         group = db.query(AvitoGroup).filter(AvitoGroup.name == old_name).first()
         if group:
             group.name = new_name
             db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
-def _auto_assign_groups():
-    from database import SessionLocal
-    db = SessionLocal()
+def _auto_assign_groups(db=None):
+    if db is None:
+        from database import SessionLocal
+        db = SessionLocal()
+        own_session = True
+    else:
+        own_session = False
     try:
         items = db.query(AvitoItem).all()
         if not items:
@@ -1261,20 +1400,25 @@ def _auto_assign_groups():
                 item.group_id = other.id
         db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
 @app.post("/api/avito/sync-items", response_model=SyncItemsResult)
 def avito_sync_items(db: Session = Depends(get_db)):
     global _syncing_items
-    if _syncing_items:
-        raise HTTPException(429, "Синхронизация уже выполняется")
+    with _syncing_items_lock:
+        if _syncing_items:
+            raise HTTPException(429, "Синхронизация уже выполняется")
+        _syncing_items = True
     token = db.query(AvitoToken).first()
     if not token:
         raise HTTPException(400, "Avito не подключён")
-    _syncing_items = True
     try:
         headers = {"Authorization": f"Bearer {token.access_token}"}
+        # Mark all items inactive — active ones will be flipped back during sync
+        db.query(AvitoItem).update({"is_active": False})
+        db.commit()
         synced = 0
         total = 0
         page = 1
@@ -1320,6 +1464,7 @@ def avito_sync_items(db: Session = Depends(get_db)):
                     existing.price = price
                     existing.status = status
                     existing.category = category
+                    existing.is_active = True
                     if placed_at:
                         existing.placed_at = placed_at
                 else:
@@ -1327,7 +1472,7 @@ def avito_sync_items(db: Session = Depends(get_db)):
                         avito_item_id=item_id,
                         title=title, address=address, url=url,
                         price=price, status=status, category=category,
-                        placed_at=placed_at,
+                        placed_at=placed_at, is_active=True,
                     ))
                 synced += 1
             if len(resources) < 100:
@@ -1335,7 +1480,6 @@ def avito_sync_items(db: Session = Depends(get_db)):
             page += 1
         # Backfill avito_item_id on existing chats
         chats_to_fix = db.query(AvitoChat).filter(AvitoChat.avito_item_id.is_(None)).all()
-        import re
         for chat in chats_to_fix:
             if chat.item_url:
                 m = re.search(r'avito\.ru/(?:\w+/)?(\d+)(?:\?|$|#)', chat.item_url)
@@ -1354,10 +1498,102 @@ def avito_sync_items(db: Session = Depends(get_db)):
 
 @app.get("/api/avito/items", response_model=List[AvitoItemResponse])
 def avito_get_items(date_from: str = Query(...), date_to: str = Query(...), db: Session = Depends(get_db)):
+    _refresh_item_activity()
     items = db.query(AvitoItem).order_by(AvitoItem.updated_at.desc()).all()
     if not items:
         return []
     return _build_avito_item_responses(items, date_from, date_to, db)
+
+
+@app.post("/api/avito/items/{item_id}/restore")
+def avito_restore_item(item_id: int, db: Session = Depends(get_db)):
+    token = db.query(AvitoToken).first()
+    if not token or not token.user_id:
+        raise HTTPException(400, "Avito не подключён")
+    _refresh_avito_token()
+    db.refresh(token)
+    headers = {"Authorization": f"Bearer {token.access_token}"}
+    try:
+        r = httpx.get(
+            f"https://api.avito.ru/core/v1/accounts/{token.user_id}/items/{item_id}/",
+            headers=headers, timeout=30
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Ошибка Avito API: {e}")
+    if r.status_code == 404:
+        return {"ok": False, "status": "not_found", "url": None, "message": "Объявление не найдено на Avito"}
+    if r.status_code != 200:
+        raise HTTPException(502, f"Avito API вернул {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    status = data.get("status")
+    url = data.get("url")
+    status_labels = {
+        "active": "активно", "removed": "снято", "old": "истекло",
+        "blocked": "заблокировано", "rejected": "отклонено модератором",
+        "not_found": "не найдено", "another_user": "другой пользователь"
+    }
+    label = status_labels.get(status, status)
+    if status == "active":
+        item = db.query(AvitoItem).filter(AvitoItem.avito_item_id == item_id).first()
+        if item:
+            item.is_active = True
+            db.commit()
+        return {"ok": True, "active": True, "url": url}
+    return {"ok": False, "active": False, "status": status, "url": url, "message": f"Статус на Avito: {label}"}
+
+
+class BulkRestoreRequest(BaseModel):
+    item_ids: List[int]
+
+
+@app.post("/api/avito/items/bulk-restore")
+def avito_bulk_restore(body: BulkRestoreRequest, db: Session = Depends(get_db)):
+    token = db.query(AvitoToken).first()
+    if not token or not token.user_id:
+        raise HTTPException(400, "Avito не подключён")
+    _refresh_avito_token()
+    db.refresh(token)
+    headers = {"Authorization": f"Bearer {token.access_token}"}
+    status_labels = {
+        "active": "активно", "removed": "снято", "old": "истекло",
+        "blocked": "заблокировано", "rejected": "отклонено",
+        "not_found": "не найдено", "another_user": "другой пользователь"
+    }
+    restored = []
+    failed = []
+    for item_id in body.item_ids:
+        try:
+            r = httpx.get(
+                f"https://api.avito.ru/core/v1/accounts/{token.user_id}/items/{item_id}/",
+                headers=headers, timeout=30
+            )
+            if r.status_code == 200:
+                data = r.json()
+                status = data.get("status")
+                url = data.get("url")
+                if status == "active":
+                    item = db.query(AvitoItem).filter(AvitoItem.avito_item_id == item_id).first()
+                    if item:
+                        item.is_active = True
+                        restored.append({"id": item_id, "title": item.title})
+                    continue
+                item = db.query(AvitoItem).filter(AvitoItem.avito_item_id == item_id).first()
+                failed.append({
+                    "id": item_id,
+                    "title": item.title if item else str(item_id),
+                    "url": url,
+                    "message": status_labels.get(status, status)
+                })
+            else:
+                failed.append({"id": item_id, "title": str(item_id), "url": None, "message": f"HTTP {r.status_code}"})
+        except Exception as e:
+            failed.append({"id": item_id, "title": str(item_id), "url": None, "message": str(e)[:50]})
+    db.commit()
+    return {
+        "restored": restored,
+        "failed": failed,
+        "hasUrls": any(f.get("url") for f in failed),
+    }
 
 
 @app.get("/api/avito/stats-info")
@@ -1388,8 +1624,7 @@ def avito_sync_stats(days: int = Query(default=30), db: Session = Depends(get_db
     with _sync_lock:
         if _stats_sync_state["running"]:
             raise HTTPException(429, "Синхронизация уже выполняется")
-    from datetime import date as date_type, timedelta
-    today = date_type.today()
+    today = date.today()
     date_from = today - timedelta(days=days - 1)
     total_days = (today - date_from).days + 1
     db.query(AvitoItemDailyStat).delete()
@@ -1411,8 +1646,7 @@ def avito_refresh_stats(mode: str = Query(default=None), db: Session = Depends(g
     with _sync_lock:
         if _stats_sync_state["running"]:
             raise HTTPException(429, "Синхронизация уже выполняется")
-    from datetime import date as date_type, timedelta
-    today = date_type.today()
+    today = date.today()
 
     last_row = db.query(AvitoItemDailyStat.date).order_by(AvitoItemDailyStat.date.desc()).first()
 
@@ -1429,7 +1663,7 @@ def avito_refresh_stats(mode: str = Query(default=None), db: Session = Depends(g
         else:
             return {"need_choice": True, "last_date": None}
     elif mode == "month_begin":
-        date_from = date_type(today.year, today.month, 1)
+        date_from = date(today.year, today.month, 1)
     elif mode == "30d":
         date_from = today - timedelta(days=29)
     elif mode == "90d":
@@ -1508,9 +1742,8 @@ def avito_move_items(data: MoveItemsRequest, db: Session = Depends(get_db)):
 
 @app.get("/api/avito/groups-stats", response_model=List[AvitoGroupStats])
 def avito_groups_stats(date_from: str = Query(...), date_to: str = Query(...), db: Session = Depends(get_db)):
-    from datetime import date as date_type, datetime
-    df = date_type.fromisoformat(date_from[:10])
-    dt = date_type.fromisoformat(date_to[:10])
+    df = date.fromisoformat(date_from[:10])
+    dt = date.fromisoformat(date_to[:10])
     df_dt = datetime.combine(df, datetime.min.time())
     dt_dt = datetime.combine(dt, datetime.min.time())
     groups = db.query(AvitoGroup).order_by(AvitoGroup.sort_order).all()
@@ -1541,9 +1774,8 @@ def avito_groups_stats(date_from: str = Query(...), date_to: str = Query(...), d
 
 
 def _build_avito_item_responses(items, date_from, date_to, db):
-    from datetime import date as date_type, datetime
-    df = date_type.fromisoformat(date_from[:10])
-    dt = date_type.fromisoformat(date_to[:10])
+    df = date.fromisoformat(date_from[:10])
+    dt = date.fromisoformat(date_to[:10])
     df_dt = datetime.combine(df, datetime.min.time())
     dt_dt = datetime.combine(dt, datetime.min.time())
 
@@ -1572,13 +1804,12 @@ def _build_avito_item_responses(items, date_from, date_to, db):
         spent = r.spent if r else None
         price_per_view = round(spent / views, 2) if (spent and views and views > 0) else None
         price_per_contact = round(spent / contacts, 2) if (spent and contacts and contacts > 0) else None
-        # Stage stats: count clients by all stages they've passed through
-        import json
-        stage_counts = {}
-        clients_for_item = db.query(Client).join(AvitoChat, AvitoChat.client_id == Client.id
-        ).filter(AvitoChat.avito_item_id == it.avito_item_id).all()
+        # Stage stats: ordered by pipeline with conversion between stages (excl. Отказ)
         all_pipeline_stages = db.query(PipelineStage).order_by(PipelineStage.order).all()
         stage_map = {s.id: s for s in all_pipeline_stages}
+        clients_for_item = db.query(Client).join(AvitoChat, AvitoChat.client_id == Client.id
+        ).filter(AvitoChat.avito_item_id == it.avito_item_id).all()
+        stage_counts = {}
         for c in clients_for_item:
             passed = set(json.loads(c.stages_passed or "[]"))
             if not passed and c.stage_id:
@@ -1586,8 +1817,20 @@ def _build_avito_item_responses(items, date_from, date_to, db):
             for sid in passed:
                 s = stage_map.get(sid)
                 if s:
-                    stage_counts.setdefault(s.name, {"color": s.color, "count": 0})["count"] += 1
-        stage_q = [{"name": k, "color": v["color"], "cnt": v["count"]} for k, v in stage_counts.items()]
+                    stage_counts[s.name] = stage_counts.get(s.name, 0) + 1
+        ordered_stats = []
+        prev_count = None
+        for s in all_pipeline_stages:
+            if s.name == "Отказ":
+                continue
+            count = stage_counts.get(s.name, 0)
+            conv = None
+            if prev_count is not None and prev_count > 0:
+                conv = round(count / prev_count * 100, 1)
+            ordered_stats.append(StageStat(
+                stage_name=s.name, color=s.color, count=count, conversion_pct=conv,
+            ))
+            prev_count = count
         result.append(AvitoItemResponse(
             avito_item_id=it.avito_item_id,
             group_id=it.group_id,
@@ -1606,7 +1849,8 @@ def _build_avito_item_responses(items, date_from, date_to, db):
             price_per_view=price_per_view,
             price_per_contact=price_per_contact,
             stats_updated_at=it.stats_updated_at,
-            stage_stats=[StageStat(stage_name=s["name"], color=s["color"], count=s["cnt"]) for s in stage_q],
+            stage_stats=ordered_stats,
+            is_active=it.is_active if it.is_active is not None else True,
         ))
     return result
 
@@ -1775,13 +2019,14 @@ def avito_mark_read(client_id: int, db: Session = Depends(get_db)):
     for avito_chat in avito_chats:
         if token:
             try:
-                c = _get_avito_client()
-                user_id = token.user_id or token.company_id
-                if user_id:
-                    c.mark_chat_as_read(user_id=int(user_id), chat_id=avito_chat.chat_id)
-                    _save_avito_token(db, c)
-            except Exception:
-                pass  # non-fatal, still mark locally
+                c = _make_avito_client(db)
+                if c:
+                    user_id = _get_avito_user_id(token)
+                    if user_id:
+                        c.mark_chat_as_read(user_id=int(user_id), chat_id=avito_chat.chat_id)
+                        _save_avito_token(db, c)
+            except Exception as e:
+                print(f"Avito sync warning: {e}")  # non-fatal, still mark locally
         db.query(AvitoMessage).filter(
             AvitoMessage.chat_id == avito_chat.chat_id,
             AvitoMessage.is_read == False,
@@ -1864,8 +2109,8 @@ def avito_sync_client_messages(client_id: int, db: Session = Depends(get_db)):
                 if m.read:
                     try:
                         msg.read_at = datetime.fromtimestamp(m.read)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Avito sync warning: {e}")
                 db.add(msg)
                 imported += 1
             db.commit()
@@ -2084,7 +2329,7 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
         Task.client_id.isnot(None),
     ).order_by(Task.due_date.asc()).all()
     seen_tomorrow = set()
-    tomorrow_added = 0
+    tomorrow_task_clients = set()
     for t in tomorrow_tasks:
         if t.client_id in seen_tomorrow:
             continue
@@ -2092,29 +2337,19 @@ def get_notifications(feed: bool = Query(default=False), db: Session = Depends(g
         client = db.query(Client).filter(Client.id == t.client_id).first()
         if not client or client.stage_id == reject_stage_id:
             continue
-        deal_name = client.deal_name or client.name or "Клиент"
-        cnt = db.query(Task).filter(
-            Task.client_id == t.client_id,
-            Task.completed == False,
-            Task.due_date != None,
-            Task.due_date >= tomorrow_start,
-            Task.due_date < day_after_start,
-        ).count()
-        msg = f"Задача на завтра: {deal_name}"
-        if cnt > 1:
-            msg += f" (+{cnt - 1})"
-        tomorrow_added += 1
+        tomorrow_task_clients.add(t.client_id)
+    tomorrow_added = 0
+    if tomorrow_task_clients:
+        tomorrow_added = 1
         items.append(NotificationItem(
-            id=0, type="tomorrow_task", message=msg,
-            link_id=t.client_id,
-            time=t.due_date.isoformat()[:19] if t.due_date else None,
+            id=0, type="tomorrow_task", message=f"Задачи на завтра ({len(tomorrow_task_clients)})",
+            link_id=0,
+            time=None,
         ))
 
     # 6. Deals with no tasks — single aggregated item
     no_task_count = db.query(Client).filter(
         ~Client.tasks.any(),
-        Client.deal_name != None,
-        Client.deal_name != "",
         Client.stage_id != reject_stage_id,
     ).count()
     no_task_added = 0
@@ -2153,18 +2388,19 @@ def mark_all_notifications_read(db: Session = Depends(get_db)):
     token = db.query(AvitoToken).first()
     if token:
         try:
-            c = _get_avito_client()
-            user_id = token.user_id or token.company_id
-            if user_id:
-                chats = db.query(AvitoChat).filter(AvitoChat.unread_count > 0).all()
-                for avito_chat in chats:
-                    try:
-                        c.mark_chat_as_read(user_id=int(user_id), chat_id=avito_chat.chat_id)
-                    except Exception:
-                        pass
-                _save_avito_token(db, c)
-        except Exception:
-            pass
+            c = _make_avito_client(db)
+            if c:
+                user_id = _get_avito_user_id(token)
+                if user_id:
+                    chats = db.query(AvitoChat).filter(AvitoChat.unread_count > 0).all()
+                    for avito_chat in chats:
+                        try:
+                            c.mark_chat_as_read(user_id=int(user_id), chat_id=avito_chat.chat_id)
+                        except Exception as e:
+                            print(f"Avito sync warning: {e}")
+                    _save_avito_token(db, c)
+        except Exception as e:
+            print(f"Avito sync warning: {e}")
     db.query(AvitoMessage).filter(AvitoMessage.is_read == False, AvitoMessage.author_name != "Вы").update({"is_read": True, "read_at": now_dt})
     db.query(AvitoChat).update({"unread_count": 0})
     db.commit()

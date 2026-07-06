@@ -161,6 +161,7 @@ class ClientResponse(ClientBase):
     task_count: int = 0
     overdue_count: int = 0
     today_count: int = 0
+    tomorrow_count: int = 0
     week_count: int = 0
     later_count: int = 0
     last_activity: Optional[datetime] = None
@@ -253,6 +254,7 @@ class StageStat(BaseModel):
     stage_name: str
     color: str
     count: int
+    conversion_pct: Optional[float] = None
 
 
 class AvitoItemResponse(BaseModel):
@@ -274,6 +276,7 @@ class AvitoItemResponse(BaseModel):
     price_per_contact: Optional[float] = None
     stats_updated_at: Optional[datetime] = None
     stage_stats: List[StageStat] = []
+    is_active: bool = True
 
     class Config:
         from_attributes = True

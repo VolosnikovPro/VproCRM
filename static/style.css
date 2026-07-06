@@ -291,11 +291,12 @@ body.dark .btn:hover { border-color: #555; background: var(--surface); }
     transition: border-color 0.15s, box-shadow 0.15s;
 }
 /* Global sync status */
-#globalSyncStatus { padding: 4px 16px; font-size: 12px; text-align: center; background: var(--warning-light); color: var(--accent); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: center; gap: 8px; }
+#globalSyncStatus { padding: 6px 16px; font-size: 12px; text-align: center; background: var(--warning-light); color: var(--accent); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 0; }
 #globalSyncStatus.hidden { display: none; }
-#globalSyncStatusText { flex: 1; }
-.sync-status-close { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0 4px; opacity: 0.7; line-height: 1; }
+#globalSyncStatusText { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync-status-close { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0 4px; opacity: 0.7; line-height: 1; flex-shrink: 0; }
 .sync-status-close:hover { opacity: 1; }
+#adsSyncStatus { font-size: 12px; color: var(--muted); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; flex-shrink: 1; }
 
 .search-bar input:focus {
     outline: none;
@@ -1509,19 +1510,25 @@ body.dark .avito-tl-mine .avito-tl-meta { color: rgba(255,255,255,0.7); }
 .integration-card .int-body { padding: 20px; }
 
 /* ═══ Ads Tab ═══ */
-.ads-page { padding: 24px; max-width: 1200px; margin: 0 auto; }
-.ads-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.ads-toolbar .btn { min-width: 100px; }
-.date-selector { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
-.date-selector .btn { font-size: 13px; padding: 4px 12px; }
+.ads-page { padding: 16px 24px; max-width: none; margin: 0; }
+.ads-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.ads-toolbar .btn,
+.ads-toolbar .btn-sm { font-size: 12px; min-width: 100px; white-space: nowrap; }
+.ads-btn-group { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.ads-sync-status { font-size: 12px; color: var(--muted); line-height: 1.3; }
+.date-selector { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.date-selector .btn { font-size: 12px; padding: 4px 12px; }
 .date-selector .btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
 .date-custom { display: flex; align-items: center; gap: 6px; }
-.date-custom input[type="date"] { padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; background: var(--surface); color: var(--text); }
-.ads-table { width: 100%; border-collapse: collapse; background: var(--surface); overflow: hidden; }
-.ads-table th { text-align: left; padding: 6px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); border-bottom: 2px solid var(--border); background: var(--bg); cursor: pointer; user-select: none; white-space: nowrap; }
-.ads-table th[data-col]:hover { color: var(--text); }
-.ads-table th.sort-asc::after { content: ' ▲'; font-size: 10px; }
-.ads-table th.sort-desc::after { content: ' ▼'; font-size: 10px; }
+.date-custom input[type="date"] { padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px; background: var(--surface); color: var(--text); }
+#adsTableContainer { overflow: auto; max-width: 100%; cursor: grab; user-select: none; }
+#adsTableContainer:active { cursor: grabbing; }
+#adsTableContainer.dragging { cursor: grabbing; }
+#adsTableContainer.dragging * { pointer-events: none; }
+#adsTableContainer table { min-width: 900px; }
+.ads-table { width: 100%; border-collapse: collapse; background: var(--surface); }
+.ads-table thead { position: sticky; top: 0; z-index: 2; }
+.ads-table th { position: sticky; top: 0; z-index: 3; text-align: left; padding: 6px 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); border-bottom: 2px solid var(--border); background: var(--bg); cursor: pointer; user-select: none; white-space: nowrap; }
 .ads-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .ads-table tr:last-child td { border-bottom: none; }
 .ads-table a { color: var(--primary); text-decoration: none; }
@@ -1529,11 +1536,23 @@ body.dark .avito-tl-mine .avito-tl-meta { color: rgba(255,255,255,0.7); }
 .stage-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .ads-empty { text-align: center; padding: 40px; color: var(--muted); }
 .ads-loading { text-align: center; padding: 20px; color: var(--muted); }
-.ads-stats-date { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
-.ads-total-row td { padding: 6px 8px; font-size: 11px; font-weight: 700; border-bottom: 2px solid var(--primary); background: var(--bg); }
+.ads-stats-date { font-size: 11px; color: var(--text-muted); }
+.ads-total-row td { position: sticky; top: 30px; z-index: 2; padding: 6px 8px; font-size: 12px; font-weight: 700; border-bottom: 2px solid var(--primary); background: var(--bg); }
 .ads-total-label { color: var(--text); }
 .ads-total-val { color: var(--primary); }
+.ads-stage-th { min-width: 60px; font-size: 12px; text-align: left; border-bottom-width: 3px; }
+.hide-stage-cols .ads-stage-th,
+.hide-stage-cols .ads-stage-cell,
+.hide-stage-cols .ads-stage-total-val { display: none; }
+.ads-stage-cell { text-align: left; font-size: 12px; border-left: 3px solid transparent; }
 
+
+/* Ads status bar */
+.ads-status-bar { font-size: 12px; margin-bottom: 8px; display: flex; gap: 16px; }
+.ads-status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.ads-status-dot.ads-status-active { background: #22c55e; box-shadow: 0 0 4px rgba(34,197,94,0.4); }
+.ads-status-dot.ads-status-inactive { background: #ef4444; box-shadow: 0 0 4px rgba(239,68,68,0.4); }
+.ads-restore-link { text-decoration: none; color: #3b82f6; font-size: 12px; margin-left: 2px; }
 
 /* Stage dropdown on cards */
 .stage-btn { background: none; border: none; cursor: pointer; font-size: 10px; padding: 0 4px; color: var(--text-muted); line-height: 1; border-radius: 3px; }

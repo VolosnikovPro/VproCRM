@@ -171,6 +171,7 @@ class AvitoItem(Base):
     stats_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0))
     updated_at = Column(DateTime, default=lambda: datetime.now().replace(microsecond=0), onupdate=lambda: datetime.now().replace(microsecond=0))
+    is_active = Column(Boolean, default=True)
 
     group = relationship("AvitoGroup", back_populates="items")
 
